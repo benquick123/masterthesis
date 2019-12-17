@@ -17,9 +17,10 @@ class SelfTeachingEnv(gym.Env):
     reward_range = (-1.0, 1.0)
     spec = gym.spec("SelfTeaching-v0")
     
-    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=200, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, SIGNIFICANT_THRESHOLD=0.001, SIGNIFICANT_DECAY=0.3):
+    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=500, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, SIGNIFICANT_THRESHOLD=0.001, SIGNIFICANT_DECAY=0.01):
+        print("Initializing environment.")
         self.hyperparams = dict(locals())
-        
+                
         assert 'N_CLUSTERS' in self.hyperparams and self.hyperparams['N_CLUSTERS'] > 0
         assert 'Y_ESTIMATED_LR' in self.hyperparams and 0.0 < self.hyperparams['Y_ESTIMATED_LR'] < 1.0
         assert 'N_TIMESTEPS' in self.hyperparams and self.hyperparams['N_TIMESTEPS'] > 0
@@ -36,6 +37,7 @@ class SelfTeachingEnv(gym.Env):
         self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(self.y_train.shape[1] ** 2, ))
     
     def _generate_data(self, save=True):
+        print("No data exist. Generating.")
         (X_train, y_train), (X_test, y_test) = mnist.load_data()
         
         # reshape, cast and scale in one step.
@@ -50,9 +52,9 @@ class SelfTeachingEnv(gym.Env):
         self.y_val = np_utils.to_categorical(y_val)
         
         autoencoder, encoder = train_autoencoder(X_train)
-        groups, hidden_representations, self.group_centers = cluster_images(np.concatenate([X_unlabel, X_val], axis=0), encoder, n_clusters=self.hyperparams['N_CLUSTERS'], plot=False)
-        self.X_unlabel_groups, self.X_unlabel_hidden = groups[:len(X_unlabel)], hidden_representations[:len(X_unlabel)]
-        self.X_val_groups, self.X_val_hidden = groups[len(X_unlabel):], hidden_representations[len(X_unlabel):]
+        groups, hidden_representations, self.group_centers = cluster_images(np.concatenate([self.X_unlabel, self.X_val], axis=0), encoder, n_clusters=self.hyperparams['N_CLUSTERS'], plot=False)
+        self.X_unlabel_groups, self.X_unlabel_hidden = groups[:len(self.X_unlabel)], hidden_representations[:len(self.X_unlabel)]
+        self.X_val_groups, self.X_val_hidden = groups[len(self.X_unlabel):], hidden_representations[len(self.X_unlabel):]
         
         if save:
             f = open('/opt/workspace/host_storage_hdd/mnist_preprocessed_' + str(self.hyperparams['N_CLUSTERS']) + '.pickle', 'wb')
@@ -68,11 +70,12 @@ class SelfTeachingEnv(gym.Env):
                 'X_val_hidden': self.X_val_hidden,
                 'X_test': self.X_test,
                 'y_test': self.y_test,
-                'groups_centers': self.group_centers,
+                'group_centers': self.group_centers,
             }, f)
             f.close()
     
     def _load_data(self):
+        print("Loading data.")
         try:
             data = pickle.load(open('/opt/workspace/host_storage_hdd/mnist_preprocessed_' + str(self.hyperparams['N_CLUSTERS']) + '.pickle', 'rb'))
             self.X_train = data['X_train']
@@ -90,7 +93,8 @@ class SelfTeachingEnv(gym.Env):
     
     def _initialize_model(self):
         if self.model is None:
-            self.model = MNISTModel(X_train.shape[1:], y_train.shape[1])
+            print("Initializing model.")
+            self.model = MNISTModel(self.X_train.shape[1:], self.y_train.shape[1])
             self.model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
         else:
             self.model.reset()
@@ -115,13 +119,16 @@ class SelfTeachingEnv(gym.Env):
         self.last_action = action
         
         tau1, tau2 = action[0], action[1]
+        # tau1, tau2 = 0.99, 0.992
         if tau1 > tau2:
             self.last_reward = -1.0
+            self.len_selected_samples = 0
             
         else:
             y_unlabel_estimates_argmax = np.argmax(self.y_unlabel_estimates, axis=1)
             y_unlabel_estimates_max = np.max(self.y_unlabel_estimates, axis=1)
             y_unlabel_estimates_indices = (y_unlabel_estimates_max > tau1) & (y_unlabel_estimates_max < tau2)
+            self.len_selected_samples = np.sum(y_unlabel_estimates_indices)
             
             y_pred_binary = np.zeros_like(self.last_y_unlabel_pred)
             for i in range(len(y_unlabel_estimates_argmax)):
@@ -132,8 +139,9 @@ class SelfTeachingEnv(gym.Env):
                            epochs=1, 
                            batch_size=self.hyperparams['BATCH_SIZE'], 
                            verbose=0)
-            print(history.history) # TODO: check how loss is saved
-            self.last_loss = 0
+            
+            self.last_loss = history.history['loss'][0]
+            self.last_train_accuracy = history.history['accuracy'][0]
             
             self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
             self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
@@ -144,7 +152,8 @@ class SelfTeachingEnv(gym.Env):
             
             new_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
             
-            self.last_reward = new_accuracy - self.last_accuracy
+            self.last_reward = (new_accuracy - self.last_accuracy)
+            self.last_reward += self.hyperparams['SIGNIFICANT_THRESHOLD'] * (self.len_selected_samples > 0 and self.last_reward > 0)
             self.last_accuracy = new_accuracy
             
             self.last_state = self._get_state()
@@ -170,6 +179,7 @@ class SelfTeachingEnv(gym.Env):
         self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
         
         self.last_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
+        self.last_train_accuracy = 0
         
         self.last_state = self._get_state()
         
@@ -178,13 +188,14 @@ class SelfTeachingEnv(gym.Env):
     def render(self, mode="ansi"):
         render_string = ""
         
-        render_string += "TIMESTEP: %d - REWARD: %.3f - LOSS: %.3f - VAL_ACC: %.3f" % (self.timestep, self.last_reward, self.last_loss, self.last_accuracy)
+        render_string += "TIMESTEP: %d - REWARD: %.3f - LOSS: %.3f - TRAIN_ACC: %.3f - VAL_ACC: %.3f" % (self.timestep, self.last_reward*10, self.last_loss, self.last_train_accuracy, self.last_accuracy)
+        render_string += "\nSignificance level: %.3f" % (self.reward_moving_average)
+        render_string += "\nNum. selected samples: %d" % (self.len_selected_samples)
         
-        render_string += "\n\naction:\n" + str(self.last_action)
+        render_string += "\n\nAction:\n" + str(self.last_action)
 
-        render_string += "\nstate:\n" + str(self.last_state)
+        render_string += "\nState:\n" + str(self.last_state.reshape((self.y_val.shape[1], self.y_val.shape[1])))
         
-        # print("Mode should be ANSI. Printing in render():", render_string, end="\r")
         print(render_string, file=open("/opt/workspace/host_storage_hdd/tmp.log", "w"))
         
         return render_string
