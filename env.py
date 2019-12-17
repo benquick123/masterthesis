@@ -1,217 +1,175 @@
 import gym
+import pickle
+import numpy as np
+from keras.datasets import mnist
+from keras.utils import np_utils
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+
+from hidden_features import train_autoencoder, cluster_images
+from model import MNISTModel
+
+gym.register("SelfTeaching-v0")
 
 class SelfTeachingEnv(gym.Env):
-    
-    def __init__(self):
-        pass
-    
-    def step(self, action):
-        pass
-    
-    def reset(self):
-        pass
-    
-    def render(self, mode="ansi"):
-        pass
-    
-    
-"""
-gym.register("Curriculum-v0")
 
-class CurriculumEnv(gym.Env):
-    
     metadata = {'render.modes': ["ansi"]}
     reward_range = (-1.0, 1.0)
-    spec = gym.spec("Curriculum-v0")
+    spec = gym.spec("SelfTeaching-v0")
     
-    def __init__(self, 
-                 N_CLASSES=None, 
-                 N_TIMESTEPS = 50, 
-                 N_LABEL = 750, N_UNLABEL = 5000, N_VALID = 250, 
-                 BATCH_SIZE = 100, 
-                 N_CLUSTERS=50, CLUSTER_DELTA=None, 
-                 SVHN_FILEPATH="/opt/workspace/host_storage_hdd/",
-                 n_episodes_warmup=0,
-                 discrete=False):
+    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=200, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, SIGNIFICANT_THRESHOLD=0.001, SIGNIFICANT_DECAY=0.3):
+        self.hyperparams = dict(locals())
         
-        self.hyperparams = {
-            "N_TIMESTEPS": N_TIMESTEPS,
-            "N_LABEL": N_LABEL,
-            "N_UNLABEL": N_UNLABEL,
-            "N_VALID": N_VALID,
-            "BATCH_SIZE": BATCH_SIZE,
-            "N_CLUSTERS": N_CLUSTERS,
-            "SVHN_FILEPATH": SVHN_FILEPATH,
-            "N_EPISODES_WARMUP": n_episodes_warmup
-        }
+        assert 'N_CLUSTERS' in self.hyperparams and self.hyperparams['N_CLUSTERS'] > 0
+        assert 'Y_ESTIMATED_LR' in self.hyperparams and 0.0 < self.hyperparams['Y_ESTIMATED_LR'] < 1.0
+        assert 'N_TIMESTEPS' in self.hyperparams and self.hyperparams['N_TIMESTEPS'] > 0
+        assert 'BATCH_SIZE' in self.hyperparams
+        assert 'PRED_BATCH_SIZE' in self.hyperparams
+        assert 'SIGNIFICANT_THRESHOLD' in self.hyperparams
+        assert 'SIGNIFICANT_DECAY' in self.hyperparams and 0.0 < self.hyperparams['SIGNIFICANT_DECAY'] < 1.0
         
-        assert self.hyperparams["N_TIMESTEPS"] > 0
-        assert self.hyperparams["N_LABEL"] > 0
-        assert self.hyperparams["N_VALID"] > 0
-        assert self.hyperparams["BATCH_SIZE"] > 0
-        assert self.hyperparams["N_CLUSTERS"] > 0
-        assert os.path.exists(self.hyperparams["SVHN_FILEPATH"])
+        self.model = None
         
-        self._load_data(N_CLASSES, CLUSTER_DELTA)
+        self._load_data()
         
-        assert self.hyperparams["N_CLASSES"] > 0
-        # so we avoid the error in later training
-        assert self.hyperparams["N_VALID"] % self.hyperparams["N_CLASSES"] == 0
-        assert self.hyperparams["N_UNLABEL"] % self.hyperparams["N_CLASSES"] == 0
+        self.action_space = gym.spaces.Box(low=0.0, high=1.0, shape=(2, ))
+        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(self.y_train.shape[1] ** 2, ))
+    
+    def _generate_data(self, save=True):
+        (X_train, y_train), (X_test, y_test) = mnist.load_data()
         
-        # self.reset()
+        # reshape, cast and scale in one step.
+        X_train = X_train.reshape(X_train.shape[:1] + (np.prod(X_train.shape[1:]), )).astype('float32') / 255
+        X_train, self.X_val, y_train, y_val = train_test_split(X_train, y_train, test_size=0.025)
+        self.X_train, self.X_unlabel, y_train, _ = train_test_split(X_train, y_train, test_size=0.99)
         
-        if discrete:
-            self.action_space = spaces.MultiBinary(N_CLUSTERS)
-        else:
-            self.action_space = spaces.Box(low=0.0, high=1.0, shape=(N_CLUSTERS, ))
-        self.observation_space = spaces.Box(low=0.0, high=1.0, shape=(N_CLUSTERS, ))
+        self.X_test = X_test.reshape(X_test.shape[:1] + (np.prod(X_test.shape[1:]), )).astype('float32') / 255
         
-    def _load_data(self, N_CLASSES, CLUSTER_DELTA):
-        ################################## DATA LOADING ####################################
-        # load data
-        # IMPORTANT: watch out when using test data. Number of classes is not necessarily matched.
-        (x_train, y_train), _ = SVHN.load_data(path=self.hyperparams["SVHN_FILEPATH"])
-        (self.x_train_labeled, self.y_train_labeled), (self.x_train_unlabeled, self.y_train_unlabeled), (self.x_valid, self.y_valid) = preprocess(x_train, y_train, self.hyperparams["N_LABEL"], self.hyperparams["N_UNLABEL"], self.hyperparams["N_VALID"], n_classes=N_CLASSES)
+        self.y_train = np_utils.to_categorical(y_train)
+        self.y_test = np_utils.to_categorical(y_test)
+        self.y_val = np_utils.to_categorical(y_val)
         
-        # select appropriate number of classes and set related hyperparams
-        self.hyperparams["N_CLASSES"] = self.y_train_labeled.shape[1]
-        self.hyperparams["CLUSTERS_DELTA"] = CLUSTER_DELTA if CLUSTER_DELTA is not None else 1 / self.hyperparams["N_CLASSES"]
+        autoencoder, encoder = train_autoencoder(X_train)
+        groups, hidden_representations, self.group_centers = cluster_images(np.concatenate([X_unlabel, X_val], axis=0), encoder, n_clusters=self.hyperparams['N_CLUSTERS'], plot=False)
+        self.X_unlabel_groups, self.X_unlabel_hidden = groups[:len(X_unlabel)], hidden_representations[:len(X_unlabel)]
+        self.X_val_groups, self.X_val_hidden = groups[len(X_unlabel):], hidden_representations[len(X_unlabel):]
         
-        # initialize tensorflow dataset
-        labeled_dataset = tf.data.Dataset.from_generator(data_generator, output_types=(tf.float32, tf.float32, tf.int32), args=[self.x_train_labeled, self.y_train_labeled]).shuffle(
-            self.hyperparams["N_LABEL"] * 2).batch(
-            self.hyperparams["N_LABEL"] * self.hyperparams["BATCH_SIZE"] // (self.hyperparams["N_LABEL"] + self.hyperparams["N_UNLABEL"]))
-        unlabeled_dataset = tf.data.Dataset.from_generator(data_generator, output_types=(tf.float32, tf.float32, tf.int32), args=[self.x_train_unlabeled, self.y_train_unlabeled]).shuffle(
-            self.hyperparams["N_UNLABEL"] * 2).batch(
-            self.hyperparams["N_UNLABEL"] * self.hyperparams["BATCH_SIZE"] // (self.hyperparams["N_LABEL"] + self.hyperparams["N_UNLABEL"]))
-        self.dataset = tf.data.Dataset.zip((labeled_dataset, unlabeled_dataset))
-        
-        # load clusters
-        self.cluster_centers = tf.convert_to_tensor(get_cluster_centers(self.hyperparams["N_CLASSES"], self.hyperparams["CLUSTERS_DELTA"], self.hyperparams["N_CLUSTERS"], seed=0), dtype=tf.float32)
+        if save:
+            f = open('/opt/workspace/host_storage_hdd/mnist_preprocessed_' + str(self.hyperparams['N_CLUSTERS']) + '.pickle', 'wb')
+            pickle.dump({
+                'X_train': self.X_train,
+                'y_train': self.y_train,
+                'X_unlabel': self.X_unlabel,
+                'X_unlabel_groups': self.X_unlabel_groups,
+                'X_unlabel_hidden': self.X_unlabel_hidden,
+                'X_val': self.X_val,
+                'y_val': self.y_val,
+                'X_val_groups': self.X_val_groups,
+                'X_val_hidden': self.X_val_hidden,
+                'X_test': self.X_test,
+                'y_test': self.y_test,
+                'groups_centers': self.group_centers,
+            }, f)
+            f.close()
+    
+    def _load_data(self):
+        try:
+            data = pickle.load(open('/opt/workspace/host_storage_hdd/mnist_preprocessed_' + str(self.hyperparams['N_CLUSTERS']) + '.pickle', 'rb'))
+            self.X_train = data['X_train']
+            self.y_train = data['y_train']
+            self.X_unlabel = data['X_unlabel']
+            self.X_unlabel_groups = data['X_unlabel_groups']
+            self.X_val = data['X_val']
+            self.y_val = data['y_val']
+            self.X_val_groups = data['X_val_groups']
+            self.X_test = data['X_test']
+            self.y_test = data['y_test']
+            self.group_centers = data['group_centers']
+        except FileNotFoundError:
+            self._generate_data(save=True)
     
     def _initialize_model(self):
-        # get input shapes
-        input_shape = self.x_train_labeled.shape[1:]
-        output_shape = self.hyperparams["N_CLASSES"]
-        
-        ################################### INITIALIZE MODEL ###################################
-        self.model = SimpleConvNet(input_shape, output_shape)
-        self.model_optimizer = k.optimizers.Adam()
-        self.model_loss = k.losses.categorical_crossentropy
-        
-    def _get_groups(self, y_pred):
-        y_pred_tiled = tf.tile(tf.reshape(y_pred, (y_pred.shape[0], 1, -1)), (1, self.hyperparams["N_CLUSTERS"], 1))
-        cluster_centers_tiled = tf.tile(tf.reshape(self.cluster_centers, (1, self.hyperparams["N_CLUSTERS"], -1)), (y_pred.shape[0], 1, 1))
-        
-        return tf.cast(tf.argmin(tf.sqrt(tf.reduce_sum((y_pred_tiled - cluster_centers_tiled) ** 2, axis=-1)), axis=1), dtype=tf.int32)
-    
+        if self.model is None:
+            self.model = MNISTModel(X_train.shape[1:], y_train.shape[1])
+            self.model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+        else:
+            self.model.reset()
+            
     def _get_state(self):
-        groups_valid = self._get_groups(self.last_y_val_pred)
-        groups_count = tf.pad(tf.math.bincount(groups_valid), [[0, self.hyperparams["N_CLUSTERS"] - tf.reduce_max(groups_valid)-1]])
-        groups_correct = tf.pad(tf.math.bincount(groups_valid, weights=tf.cast(tf.argmax(self.y_valid, axis=1) == tf.argmax(self.last_y_val_pred, axis=1), dtype=tf.int32)), [[0, self.hyperparams["N_CLUSTERS"] - tf.reduce_max(groups_valid)-1]])
+        state = []
+        y_val_argmax = np.argmax(self.y_val, axis=1)
         
-        # np.savetxt("counts_" + str(time.time()), groups_count.numpy())
-        # np.savetxt("correct_" + str(time.time()), groups_correct.numpy())
-        
-        state = tf.where(groups_count > 0, groups_correct / (groups_count + 1), 0)
-        return tf.cast(state, dtype=tf.float32).numpy()
+        for i in range(self.y_val.shape[1]):
+            mask = i == y_val_argmax
+            state.append(np.mean(self.last_y_val_pred[mask], axis=0))
+            
+        state = np.array(state).flatten()
+        assert state.shape == self.observation_space.shape
+        return state
     
-    def step(self, action):        
-        losses = []
-
-        self.last_action = tf.convert_to_tensor(action)
-        label_weights = tf.gather(self.last_action, self._get_groups(self.last_y_label_pred))
-        unlabel_weights = tf.gather(self.last_action, self._get_groups(self.last_y_unlabel_pred))
+    def _significant(self, reward):
+        self.reward_moving_average = (1 - self.hyperparams['SIGNIFICANT_DECAY']) * self.reward_moving_average + self.hyperparams['SIGNIFICANT_DECAY'] * reward
+        return self.reward_moving_average > self.hyperparams['SIGNIFICANT_THRESHOLD']
+            
+    def step(self, action):
+        self.last_action = action
         
-        # y_max_values = tf.tile(tf.reshape(tf.reduce_max(self.last_y_unlabel_pred, axis=1), (-1, 1)), (1, self.last_y_unlabel_pred.shape[1]))
-        # y_train_estimated = tf.where(self.last_y_unlabel_pred == y_max_values, 1.0, 0.0)
-        
-        for batch, ((x_batch_labeled, y_batch_labeled, labeled_indices), (x_batch_unlabeled, y_batch_unlabeled, unlabeled_indices)) in enumerate(self.dataset):
+        tau1, tau2 = action[0], action[1]
+        if tau1 > tau2:
+            self.last_reward = -1.0
             
-            x_batch = tf.concat([x_batch_labeled, x_batch_unlabeled], axis=0)
+        else:
+            y_unlabel_estimates_argmax = np.argmax(self.y_unlabel_estimates, axis=1)
+            y_unlabel_estimates_max = np.max(self.y_unlabel_estimates, axis=1)
+            y_unlabel_estimates_indices = (y_unlabel_estimates_max > tau1) & (y_unlabel_estimates_max < tau2)
             
-            y_batch_estimated_label = tf.gather(self.last_y_label_pred, labeled_indices)
-            y_batch_estimated_unlabel = tf.gather(self.last_y_unlabel_pred, unlabeled_indices) # = tf.concat([y_batch_labeled, y_batch_unlabeled], axis=1)
-            y_batch_estimated = tf.concat([y_batch_estimated_label, y_batch_estimated_unlabel], axis=0)
+            y_pred_binary = np.zeros_like(self.last_y_unlabel_pred)
+            for i in range(len(y_unlabel_estimates_argmax)):
+                y_pred_binary[i, y_unlabel_estimates_argmax[i]] = 1.0
             
-            y_max_values = tf.tile(tf.reshape(tf.reduce_max(y_batch_estimated, axis=1), (-1, 1)), (1, y_batch_estimated.shape[1]))
-            y_train_estimated = tf.where(y_batch_estimated == y_max_values, 1.0, 0.0)
+            history = self.model.fit(np.concatenate([self.X_train, self.X_unlabel[y_unlabel_estimates_indices]], axis=0),
+                           np.concatenate([self.y_train, y_pred_binary[y_unlabel_estimates_indices]], axis=0), 
+                           epochs=1, 
+                           batch_size=self.hyperparams['BATCH_SIZE'], 
+                           verbose=0)
+            print(history.history) # TODO: check how loss is saved
+            self.last_loss = 0
             
-            with tf.GradientTape() as g:
-                y_batch_labeled_pred = self.model(x_batch_labeled, training=True)
-                loss_labeled = tf.reduce_mean(self.model_loss(y_batch_labeled, y_batch_labeled_pred))
-                
-                y_batch_unlabeled_pred = self.model(x_batch_unlabeled, training=True)
-                batch_weights = tf.gather(weights, unlabeled_indices)
-                y_batch_unlabeled_est = tf.gather(y_train_estimated, unlabeled_indices)
-                loss_unlabeled = tf.reduce_mean(self.model_loss(y_batch_unlabeled_est, y_batch_unlabeled_pred) * batch_weights)
-                
-                y_batch_pred = self.model(x_batch_unlabeled, training=True)
-                loss = tf.reduce_mean(self.model_loss(y_batch_estimated_unlabel, y_batch_pred))
-                
-                # loss = loss_labeled + loss_unlabeled
-                
-            gradients = g.gradient(loss, self.model.trainable_variables)
-            self.model_optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
+            self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+            self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+            self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
             
-            losses.append(loss.numpy())
+            self.y_unlabel_estimates = (1 - self.hyperparams['Y_ESTIMATED_LR']) * self.y_unlabel_estimates + self.hyperparams['Y_ESTIMATED_LR'] * self.last_y_unlabel_pred
+            self.y_unlabel_estimates /= np.reshape(np.sum(self.y_unlabel_estimates, axis=1), (-1, 1))
             
-            if batch >= (self.hyperparams["N_LABEL"] + self.hyperparams["N_UNLABEL"]) // self.hyperparams["BATCH_SIZE"]:
-                break
-                
-        self.last_loss = np.mean(losses)
-        
-        self.last_y_val_pred = self.model.predict(self.x_valid, batch_size=self.hyperparams["BATCH_SIZE"])
-        self.last_y_label_pred == self.model.predict(self.x_train_labeled, batch_size=self.hyperparams["BATCH_SIZE"])
-        self.last_y_unlabel_pred = self.model.predict(self.x_train_unlabeled, batch_size=self.hyperparams["BATCH_SIZE"])
-        
-        acc_t1 = accuracy_score(tf.argmax(self.y_valid, axis=1), tf.argmax(self.last_y_val_pred, axis=1))
-        reward = acc_t1 - self.last_accuracy
-    
-        self.last_accuracy = acc_t1
-        self.last_state = observation = self._get_state()
-        
-        terminal = False if self.timestep < self.hyperparams["N_TIMESTEPS"] or self.last_accuracy < 1.0 else True
-        info = {"val_acc": self.last_accuracy, "loss": self.last_loss}
+            new_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
+            
+            self.last_reward = new_accuracy - self.last_accuracy
+            self.last_accuracy = new_accuracy
+            
+            self.last_state = self._get_state()
+            
         self.timestep += 1
+        terminal = True if self.timestep >= self.hyperparams['N_TIMESTEPS'] or not self._significant(self.last_reward) else False
+            
+        return self.last_state, self.last_reward * 10, terminal, { 'val_acc': self.last_accuracy, 'timestep': self.timestep }
         
-        return observation, reward, terminal, info
-    
     def reset(self):
         self._initialize_model()
         
-        self.last_loss = float("inf")
-        self.last_action = tf.zeros(2)
-        self.last_state = tf.zeros(self.hyperparams["N_CLUSTERS"])
-        
-        if self.hyperparams["N_EPISODES_WARMUP"] > 0:
-            for episode in range(self.hyperparams["N_EPISODES_WARMUP"]):
-                self.timestep = episode
-                
-                # self.model.fit(self.x_train_labeled, self.y_train_labeled, epochs=1, verbose=0)
-                for batch, ((x_batch_label, y_batch_label, indices_label), _) in enumerate(self.dataset):
-                    with tf.GradientTape() as g:
-                        y_batch_pred = self.model(x_batch_label, training=True)    
-                        loss = tf.reduce_mean(self.model_loss(y_batch_label, y_batch_pred))
-                        
-                    gradients = g.gradient(loss, self.model.trainable_variables)
-                    self.model_optimizer.apply_gradients(zip(gradients, self.model.trainable_variables))
-                    
-                    if batch >= (self.hyperparams["N_LABEL"] + self.hyperparams["N_UNLABEL"]) // self.hyperparams["BATCH_SIZE"]:
-                        break
-                
-                self.last_y_val_pred = self.model.predict(self.x_valid, batch_size=self.hyperparams["BATCH_SIZE"])
-                self.last_accuracy = accuracy_score(tf.argmax(self.y_valid, axis=1), tf.argmax(self.last_y_val_pred, axis=1))
-                self.render()
-        
+        self.y_unlabel_estimates = np.ones((self.X_unlabel.shape[0], self.y_train.shape[1])) * (1 / self.y_train.shape[1])
         self.timestep = 0
+        self.last_reward = 0
+        self.reward_moving_average = self.hyperparams['SIGNIFICANT_THRESHOLD']
         
-        self.last_y_val_pred = self.model.predict(self.x_valid, batch_size=self.hyperparams["BATCH_SIZE"])
-        self.last_y_unlabel_pred = self.model.predict(self.x_train_unlabeled, batch_size=self.hyperparams["BATCH_SIZE"])
-        self.last_y_label_pred = self.model.predict(self.x_train_labeled, batch_size=self.hyperparams["BATCH_SIZE"])
+        self.last_loss = float("inf")
+        self.last_action = np.zeros(self.action_space.shape[0])
         
-        self.last_accuracy = accuracy_score(tf.argmax(self.y_valid, axis=1), tf.argmax(self.last_y_val_pred, axis=1))
+        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        
+        self.last_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
         
         self.last_state = self._get_state()
         
@@ -220,20 +178,13 @@ class CurriculumEnv(gym.Env):
     def render(self, mode="ansi"):
         render_string = ""
         
-        render_string += "TIMESTEP: %d - LOSS: %.3f - VAL_ACC: %.3f" % (self.timestep, self.last_loss, self.last_accuracy)
+        render_string += "TIMESTEP: %d - REWARD: %.3f - LOSS: %.3f - VAL_ACC: %.3f" % (self.timestep, self.last_reward, self.last_loss, self.last_accuracy)
         
-        render_string += "\n\naction: %.3f (+/- %.3f)" % (np.mean(self.last_action), np.std(self.last_action))
-        render_string += "\n" + str(self.last_action.numpy())
-        
-        render_string += "\n\nstate (min, max): %.3f (%d), %.3f (%d)" % (
-            np.min(self.last_state), np.argmin(self.last_state), np.max(self.last_state), np.argmax(self.last_state)
-        )
-        render_string += "\n" + str(self.last_state)
+        render_string += "\n\naction:\n" + str(self.last_action)
+
+        render_string += "\nstate:\n" + str(self.last_state)
         
         # print("Mode should be ANSI. Printing in render():", render_string, end="\r")
         print(render_string, file=open("/opt/workspace/host_storage_hdd/tmp.log", "w"))
         
         return render_string
-    
-
-"""

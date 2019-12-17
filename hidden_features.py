@@ -56,7 +56,7 @@ def cluster_images(x, encoder, n_clusters=80, plot=False):
             plt.draw()
             plt.savefig('/opt/workspace/host_storage_hdd/results/autoencoder_clustering/group_' + str(group) + '_' + str(len(group_members)) + '.png')
             
-    return groups
+    return groups, x_hidden_features, kmeans.cluster_centers_
     
 
 if __name__ == "__main__":
