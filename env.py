@@ -4,7 +4,7 @@ import numpy as np
 from keras.datasets import mnist
 from keras.utils import np_utils
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, log_loss
 
 from hidden_features import train_autoencoder, cluster_images
 from model import MNISTModel
@@ -14,10 +14,10 @@ gym.register("SelfTeaching-v0")
 class SelfTeachingEnv(gym.Env):
 
     metadata = {'render.modes': ["ansi"]}
-    reward_range = (-1.0, 1.0)
+    reward_range = (-10.0, 10.0)
     spec = gym.spec("SelfTeaching-v0")
     
-    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=500, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, SIGNIFICANT_THRESHOLD=0.001, SIGNIFICANT_DECAY=0.01):
+    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=500, MIN_TIMESTEPS=0, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, SIGNIFICANT_THRESHOLD=0.001, SIGNIFICANCE_DECAY=0.05, EPOCHS_PER_STEP=1, ID=0):
         print("Initializing environment.")
         self.hyperparams = dict(locals())
                 
@@ -27,14 +27,17 @@ class SelfTeachingEnv(gym.Env):
         assert 'BATCH_SIZE' in self.hyperparams
         assert 'PRED_BATCH_SIZE' in self.hyperparams
         assert 'SIGNIFICANT_THRESHOLD' in self.hyperparams
-        assert 'SIGNIFICANT_DECAY' in self.hyperparams and 0.0 < self.hyperparams['SIGNIFICANT_DECAY'] < 1.0
+        assert 'SIGNIFICANCE_DECAY' in self.hyperparams and 0.0 < self.hyperparams['SIGNIFICANCE_DECAY'] < 1.0
+        assert 'MIN_TIMESTEPS' in self.hyperparams
+        assert 'EPOCHS_PER_STEP' in self.hyperparams
+        assert 'ID' in self.hyperparams
         
         self.model = None
         
         self._load_data()
         
         self.action_space = gym.spaces.Box(low=0.0, high=1.0, shape=(2, ))
-        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(self.y_train.shape[1] ** 2, ))
+        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(self.y_train.shape[1] ** 2 + 5, ))
     
     def _generate_data(self, save=True):
         print("No data exist. Generating.")
@@ -108,60 +111,66 @@ class SelfTeachingEnv(gym.Env):
             state.append(np.mean(self.last_y_val_pred[mask], axis=0))
             
         state = np.array(state).flatten()
+        state = np.append(state, [self.len_selected_samples / self.X_unlabel.shape[0], self.last_val_accuracy, self.last_train_accuracy, self.last_val_loss, self.last_train_loss])
+
         assert state.shape == self.observation_space.shape
         return state
     
     def _significant(self, reward):
-        self.reward_moving_average = (1 - self.hyperparams['SIGNIFICANT_DECAY']) * self.reward_moving_average + self.hyperparams['SIGNIFICANT_DECAY'] * reward
-        return self.reward_moving_average > self.hyperparams['SIGNIFICANT_THRESHOLD']
+        self.reward_moving_average = (1 - self.hyperparams['SIGNIFICANCE_DECAY']) * self.reward_moving_average + self.hyperparams['SIGNIFICANCE_DECAY'] * reward
+        if self.timestep < self.hyperparams['MIN_TIMESTEPS']:
+            return True
+        else:
+            return self.reward_moving_average > self.hyperparams['SIGNIFICANT_THRESHOLD']
             
     def step(self, action):
         self.last_action = action
         
         tau1, tau2 = action[0], action[1]
-        # tau1, tau2 = 0.99, 0.992
-        if tau1 > tau2:
-            self.last_reward = -1.0
-            self.len_selected_samples = 0
-            
-        else:
-            y_unlabel_estimates_argmax = np.argmax(self.y_unlabel_estimates, axis=1)
-            y_unlabel_estimates_max = np.max(self.y_unlabel_estimates, axis=1)
-            y_unlabel_estimates_indices = (y_unlabel_estimates_max > tau1) & (y_unlabel_estimates_max < tau2)
-            self.len_selected_samples = np.sum(y_unlabel_estimates_indices)
-            
-            y_pred_binary = np.zeros_like(self.last_y_unlabel_pred)
-            for i in range(len(y_unlabel_estimates_argmax)):
-                y_pred_binary[i, y_unlabel_estimates_argmax[i]] = 1.0
-            
-            history = self.model.fit(np.concatenate([self.X_train, self.X_unlabel[y_unlabel_estimates_indices]], axis=0),
-                           np.concatenate([self.y_train, y_pred_binary[y_unlabel_estimates_indices]], axis=0), 
-                           epochs=1, 
-                           batch_size=self.hyperparams['BATCH_SIZE'], 
-                           verbose=0)
-            
-            self.last_loss = history.history['loss'][0]
-            self.last_train_accuracy = history.history['accuracy'][0]
-            
-            self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
-            self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
-            self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
-            
-            self.y_unlabel_estimates = (1 - self.hyperparams['Y_ESTIMATED_LR']) * self.y_unlabel_estimates + self.hyperparams['Y_ESTIMATED_LR'] * self.last_y_unlabel_pred
-            self.y_unlabel_estimates /= np.reshape(np.sum(self.y_unlabel_estimates, axis=1), (-1, 1))
-            
-            new_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
-            
-            self.last_reward = (new_accuracy - self.last_accuracy)
-            self.last_reward += self.hyperparams['SIGNIFICANT_THRESHOLD'] * (self.len_selected_samples > 0 and self.last_reward > 0)
-            self.last_accuracy = new_accuracy
-            
-            self.last_state = self._get_state()
+        if tau1 >= tau2:
+            tau1, tau2 = tau2, tau1
+
+        y_unlabel_estimates_argmax = np.argmax(self.y_unlabel_estimates, axis=1)
+        y_unlabel_estimates_max = np.max(self.y_unlabel_estimates, axis=1)
+        y_unlabel_estimates_indices = (y_unlabel_estimates_max > tau1) & (y_unlabel_estimates_max < tau2)
+        self.len_selected_samples = np.sum(y_unlabel_estimates_indices)
+        
+        y_pred_binary = np.zeros_like(self.last_y_unlabel_pred)
+        for i in range(len(y_unlabel_estimates_argmax)):
+            y_pred_binary[i, y_unlabel_estimates_argmax[i]] = 1.0
+        
+        history = self.model.fit(np.concatenate([self.X_train, self.X_unlabel[y_unlabel_estimates_indices]], axis=0),
+                        np.concatenate([self.y_train, y_pred_binary[y_unlabel_estimates_indices]], axis=0), 
+                        epochs=self.hyperparams['EPOCHS_PER_STEP'], 
+                        batch_size=self.hyperparams['BATCH_SIZE'], 
+                        verbose=0)
+        
+        self.last_train_loss = history.history['loss'][0]
+        self.last_train_accuracy = history.history['accuracy'][0]
+        
+        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        
+        self.y_unlabel_estimates = (1 - self.hyperparams['Y_ESTIMATED_LR']) * self.y_unlabel_estimates + self.hyperparams['Y_ESTIMATED_LR'] * self.last_y_unlabel_pred
+        self.y_unlabel_estimates /= np.reshape(np.sum(self.y_unlabel_estimates, axis=1), (-1, 1))
+        
+        new_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
+        
+        self.last_reward = (new_accuracy - self.last_val_accuracy)
+        self.last_reward *= np.exp(1 - np.abs(self.last_reward))
+        self.last_reward *= new_accuracy
+        # self.last_reward *= 1.01 if self.len_selected_samples > 0 and self.last_reward > 0 else 1.0
+        
+        self.last_val_accuracy = new_accuracy
+        self.last_val_loss = log_loss(self.y_val, self.last_y_val_pred)
+        
+        self.last_state = self._get_state()
             
         self.timestep += 1
         terminal = True if self.timestep >= self.hyperparams['N_TIMESTEPS'] or not self._significant(self.last_reward) else False
             
-        return self.last_state, self.last_reward * 10, terminal, { 'val_acc': self.last_accuracy, 'timestep': self.timestep }
+        return self.last_state, self.last_reward * 10, terminal, { 'val_acc': self.last_val_accuracy }
         
     def reset(self):
         self._initialize_model()
@@ -169,17 +178,19 @@ class SelfTeachingEnv(gym.Env):
         self.y_unlabel_estimates = np.ones((self.X_unlabel.shape[0], self.y_train.shape[1])) * (1 / self.y_train.shape[1])
         self.timestep = 0
         self.last_reward = 0
+        self.len_selected_samples = 0
         self.reward_moving_average = self.hyperparams['SIGNIFICANT_THRESHOLD']
         
-        self.last_loss = float("inf")
         self.last_action = np.zeros(self.action_space.shape[0])
         
         self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
         self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
         self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
         
-        self.last_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
-        self.last_train_accuracy = 0
+        self.last_val_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
+        self.last_train_accuracy = accuracy_score(np.argmax(self.y_train, axis=1), np.argmax(self.last_y_label_pred, axis=1))
+        self.last_val_loss = log_loss(self.y_val, self.last_y_val_pred)
+        self.last_train_loss = log_loss(self.y_train, self.last_y_label_pred)
         
         self.last_state = self._get_state()
         
@@ -188,14 +199,16 @@ class SelfTeachingEnv(gym.Env):
     def render(self, mode="ansi"):
         render_string = ""
         
-        render_string += "TIMESTEP: %d - REWARD: %.3f - LOSS: %.3f - TRAIN_ACC: %.3f - VAL_ACC: %.3f" % (self.timestep, self.last_reward*10, self.last_loss, self.last_train_accuracy, self.last_accuracy)
+        render_string += "TIMESTEP: %d - REWARD: %.3f" % (self.timestep, self.last_reward*10)
+        render_string += "\nLOSS: %.3f - TRAIN_ACC: %.3f - VAL_ACC: %.3f" % (self.last_train_loss, self.last_train_accuracy, self.last_val_accuracy)
         render_string += "\nSignificance level: %.3f" % (self.reward_moving_average)
         render_string += "\nNum. selected samples: %d" % (self.len_selected_samples)
         
-        render_string += "\n\nAction:\n" + str(self.last_action)
+        render_string += "\n\nAction:\n" + str(['%.6f' % (element) for element in self.last_action]).replace("'", "")
 
-        render_string += "\nState:\n" + str(self.last_state.reshape((self.y_val.shape[1], self.y_val.shape[1])))
+        render_string += "\nState:\n" + str(self.last_state[:-5].reshape((self.y_val.shape[1], self.y_val.shape[1])))[:-1]
+        render_string += "\n " + str(['%.2f' % (element) for element in self.last_state[-5:]]).replace("'", "").replace(",", "")
         
-        print(render_string, file=open("/opt/workspace/host_storage_hdd/tmp.log", "w"))
+        print(render_string, file=open("/opt/workspace/host_storage_hdd/tmp_" + self.hyperparams['ID'] + ".log", "w"))
         
         return render_string
