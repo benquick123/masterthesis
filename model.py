@@ -1,8 +1,11 @@
 import keras as k
 from keras.layers import Input, Dense, Activation, Dropout
 import keras.regularizers as regularizers
+from keras import backend as K
 
 import numpy as np
+
+from tf2rl.distributions.diagonal_gaussian import DiagonalGaussian
 
 
 class MNISTModel(k.models.Model):
@@ -31,6 +34,7 @@ class MNISTModel(k.models.Model):
         return input0, output0
     
     def reset(self):
+        """
         for layer in self.layers:
             for k, initializer in layer.__dict__.items():
                 if "initializer" not in k:
@@ -38,4 +42,12 @@ class MNISTModel(k.models.Model):
                 # find the corresponding variable
                 var = getattr(layer, k.replace("_initializer", ""))
                 var.assign(initializer(var.shape, var.dtype))
-    
+        """
+        session = K.get_session()
+        for layer in self.layers: 
+            for v in layer.__dict__:
+                v_arg = getattr(layer,v)
+                if hasattr(v_arg,'initializer'):
+                    initializer_method = getattr(v_arg, 'initializer')
+                    initializer_method.run(session=session)
+                    # print('reinitializing layer {}.{}'.format(layer.name, v))

@@ -32,4 +32,8 @@
 - IMPLEMENT CO-TRAINING!
 - PPO - lower LR, higher entropy weight, bigger model
 - partial observability.
-- 
+
+## TODO:
+
+- Implement deeper NN.
+- Try out different weight initialization. Check what are the outputs when the agent is initialized.

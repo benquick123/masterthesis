@@ -17,7 +17,9 @@ class SelfTeachingEnv(gym.Env):
     reward_range = (-10.0, 10.0)
     spec = gym.spec("SelfTeaching-v0")
     
-    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=500, MIN_TIMESTEPS=0, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, SIGNIFICANT_THRESHOLD=0.001, SIGNIFICANCE_DECAY=0.05, EPOCHS_PER_STEP=1, ID=0):
+    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=500, MIN_TIMESTEPS=0, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, SIGNIFICANT_THRESHOLD=0.001, SIGNIFICANCE_DECAY=0.02, EPOCHS_PER_STEP=1, ID=0, HISTORY_LEN=1, HISTORY_MEAN=False):
+        super(SelfTeachingEnv, self).__init__()
+        
         print("Initializing environment.")
         self.hyperparams = dict(locals())
                 
@@ -27,17 +29,19 @@ class SelfTeachingEnv(gym.Env):
         assert 'BATCH_SIZE' in self.hyperparams
         assert 'PRED_BATCH_SIZE' in self.hyperparams
         assert 'SIGNIFICANT_THRESHOLD' in self.hyperparams
-        assert 'SIGNIFICANCE_DECAY' in self.hyperparams and 0.0 < self.hyperparams['SIGNIFICANCE_DECAY'] < 1.0
+        assert 'SIGNIFICANCE_DECAY' in self.hyperparams and 0.0 <= self.hyperparams['SIGNIFICANCE_DECAY'] <= 1.0
         assert 'MIN_TIMESTEPS' in self.hyperparams
         assert 'EPOCHS_PER_STEP' in self.hyperparams
         assert 'ID' in self.hyperparams
+        assert 'HISTORY_LEN' in self.hyperparams and self.hyperparams['HISTORY_LEN'] >= 1
+        assert 'HISTORY_MEAN' in self.hyperparams and (self.hyperparams['HISTORY_MEAN'] and self.hyperparams['HISTORY_LEN'] >= 2 or not self.hyperparams['HISTORY_MEAN'])
         
         self.model = None
         
         self._load_data()
         
         self.action_space = gym.spaces.Box(low=0.0, high=1.0, shape=(2, ))
-        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=(self.y_train.shape[1] ** 2 + 5, ))
+        self.observation_space = gym.spaces.Box(low=0.0, high=1.0, shape=((self.hyperparams['HISTORY_LEN'] if not self.hyperparams['HISTORY_MEAN'] else 1) * (self.y_train.shape[1] ** 2 + 5), ))
     
     def _generate_data(self, save=True):
         print("No data exist. Generating.")
@@ -103,7 +107,7 @@ class SelfTeachingEnv(gym.Env):
             self.model.reset()
             
     def _get_state(self):
-        state = []
+        state = []  
         y_val_argmax = np.argmax(self.y_val, axis=1)
         
         for i in range(self.y_val.shape[1]):
@@ -113,7 +117,7 @@ class SelfTeachingEnv(gym.Env):
         state = np.array(state).flatten()
         state = np.append(state, [self.len_selected_samples / self.X_unlabel.shape[0], self.last_val_accuracy, self.last_train_accuracy, self.last_val_loss, self.last_train_loss])
 
-        assert state.shape == self.observation_space.shape
+        # assert (state.shape == self.observation_space.shape) if self.hyperparams['HISTORY_LEN'] is None else (state.shape == self.observation_space.shape[1:])
         return state
     
     def _significant(self, reward):
@@ -121,12 +125,12 @@ class SelfTeachingEnv(gym.Env):
         if self.timestep < self.hyperparams['MIN_TIMESTEPS']:
             return True
         else:
-            return self.reward_moving_average > self.hyperparams['SIGNIFICANT_THRESHOLD']
+            return self.reward_moving_average >= self.hyperparams['SIGNIFICANT_THRESHOLD']
             
     def step(self, action):
-        self.last_action = action
+        self.last_action = action.reshape(-1)
         
-        tau1, tau2 = action[0], action[1]
+        tau1, tau2 = self.last_action[0], self.last_action[1]
         if tau1 >= tau2:
             tau1, tau2 = tau2, tau1
 
@@ -158,19 +162,23 @@ class SelfTeachingEnv(gym.Env):
         new_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
         
         self.last_reward = (new_accuracy - self.last_val_accuracy)
-        self.last_reward *= np.exp(1 - np.abs(self.last_reward))
-        self.last_reward *= new_accuracy
+        # self.last_reward *= np.exp(1 - np.abs(self.last_reward))
+        # self.last_reward *= new_accuracy
         # self.last_reward *= 1.01 if self.len_selected_samples > 0 and self.last_reward > 0 else 1.0
         
         self.last_val_accuracy = new_accuracy
         self.last_val_loss = log_loss(self.y_val, self.last_y_val_pred)
         
-        self.last_state = self._get_state()
+        curr_state = self._get_state()
+        self.last_state = np.append(self.last_state.reshape((self.hyperparams['HISTORY_LEN'] if not self.hyperparams['HISTORY_MEAN'] else 1, -1)), curr_state.reshape((1, -1)), axis=0)
+        self.last_state = return_state = np.delete(self.last_state, 0, 0)
+        if self.hyperparams['HISTORY_MEAN']:
+            return_state =  np.mean(return_state, axis=0)
             
         self.timestep += 1
         terminal = True if self.timestep >= self.hyperparams['N_TIMESTEPS'] or not self._significant(self.last_reward) else False
             
-        return self.last_state, self.last_reward * 10, terminal, { 'val_acc': self.last_val_accuracy }
+        return np.reshape(return_state, (-1, )), self.last_reward * 10, terminal, { 'val_acc': self.last_val_accuracy, 'timestep': self.timestep }
         
     def reset(self):
         self._initialize_model()
@@ -192,9 +200,15 @@ class SelfTeachingEnv(gym.Env):
         self.last_val_loss = log_loss(self.y_val, self.last_y_val_pred)
         self.last_train_loss = log_loss(self.y_train, self.last_y_label_pred)
         
-        self.last_state = self._get_state()
+        curr_state = self._get_state()
         
-        return self.last_state
+        self.last_state = np.reshape(np.zeros(self.observation_space.shape), (self.hyperparams['HISTORY_LEN'] if not self.hyperparams['HISTORY_MEAN'] else 1, -1))    
+        self.last_state = np.append(self.last_state.reshape((self.hyperparams['HISTORY_LEN'] if not self.hyperparams['HISTORY_MEAN'] else 1, -1)), curr_state.reshape((1, -1)), axis=0)
+        self.last_state = return_state = np.delete(self.last_state, 0, axis=0)
+        if self.hyperparams['HISTORY_MEAN']:
+            return_state = np.mean(self.last_state, axis=0)
+        
+        return np.reshape(return_state, (-1, ))
     
     def render(self, mode="ansi"):
         render_string = ""
@@ -205,9 +219,12 @@ class SelfTeachingEnv(gym.Env):
         render_string += "\nNum. selected samples: %d" % (self.len_selected_samples)
         
         render_string += "\n\nAction:\n" + str(['%.6f' % (element) for element in self.last_action]).replace("'", "")
-
-        render_string += "\nState:\n" + str(self.last_state[:-5].reshape((self.y_val.shape[1], self.y_val.shape[1])))[:-1]
-        render_string += "\n " + str(['%.2f' % (element) for element in self.last_state[-5:]]).replace("'", "").replace(",", "")
+        if self.hyperparams['HISTORY_LEN'] is None:
+            render_string += "\nState:\n" + str(self.last_state[:-5].reshape((self.y_val.shape[1], self.y_val.shape[1])))[:-1]
+            render_string += "\n " + str(['%.2f' % (element) for element in self.last_state[-5:]]).replace("'", "").replace(",", "")
+        else:
+            render_string += "\nState:\n" + str(self.last_state[-1][:-5].reshape((self.y_val.shape[1], self.y_val.shape[1])))[:-1]
+            render_string += "\n " + str(['%.2f' % (element) for element in self.last_state[-1][-5:]]).replace("'", "").replace(",", "")
         
         print(render_string, file=open("/opt/workspace/host_storage_hdd/tmp_" + self.hyperparams['ID'] + ".log", "w"))
         
