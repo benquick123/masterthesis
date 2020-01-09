@@ -1,7 +1,7 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-gpu_num = '1'
+gpu_num = '2'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -10,6 +10,7 @@ import tensorflow as tf
 tf.get_logger().setLevel('ERROR')
 
 from datetime import datetime
+import shutil
 import gym
 import numpy as np
 np.set_printoptions(formatter={'float': lambda x: "{0:0.2f}".format(x)})
@@ -21,8 +22,7 @@ from stable_baselines.common import make_vec_env
 from stable_baselines.gail import generate_expert_traj, ExpertDataset
 from stable_baselines import PPO2, SAC
 
-from env import SelfTeachingEnv
-
+from env import SelfTeachingEnvV1 as SelfTeachingEnv
 
 best_train_mean_episode_rewards = 0
 best_test_mean_episode_rewards = 0
@@ -31,11 +31,16 @@ def learn_callback(_locals, _globals):
     global best_train_mean_episode_rewards
     global best_test_mean_episode_rewards
     
-    reward_lookback = 20
-    test_interval = 100
-    
-    if _locals['episode_rewards'][-1] == 0:
+    if _locals['episode_rewards'][-1] == 0:        
         num_episodes = len(_locals['episode_rewards'])
+        if _locals['step'] < _locals['self'].learning_starts:
+            return True
+        
+        reward_lookback = 20
+        test_interval = int(5 + (1 - (_locals['step'] - _locals['self'].learning_starts) / (_locals['total_timesteps'] - _locals['self'].learning_starts)) * 65)
+        test_interval = 1
+        test_episodes = 5
+        
         mean_episode_rewards = np.mean(_locals['episode_rewards'][-(reward_lookback + 1):-1])
             
         if mean_episode_rewards > best_train_mean_episode_rewards:
@@ -43,16 +48,16 @@ def learn_callback(_locals, _globals):
             _locals['self'].save(save_path + 'best_by_train_sac_self_teaching')
             
         if num_episodes % test_interval == 0:
-            accuracies, min_steps, mean_actions, std_actions = test(_locals['self'], _locals['self'].env, n_episodes=5)
+            mean_accuracies, std_accuracies, mean_actions, std_actions = test(_locals['self'], _locals['self'].env, n_episodes=test_episodes)
             
             is_new_best = False
-            if accuracies[-1] > best_test_mean_episode_rewards:
-                best_test_mean_episode_rewards = accuracies[-1]
+            if mean_accuracies[-1] > best_test_mean_episode_rewards:
+                best_test_mean_episode_rewards = mean_accuracies[-1]
                 _locals['self'].save(save_path + 'best_by_test_sac_self_teaching')
                 is_new_best = True
             
-            plot_actions(mean_actions, std_actions, str(num_episodes) + "_test" + ("_new_best" if is_new_best else ""), "C5")
-            plot([accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.8, 1.0), filename=str(num_episodes) + "_test" + ("_new_best" if is_new_best else "") + "_accuracy")
+            # plot_actions(mean_actions, std_actions, str(num_episodes) + "_test" + ("_new_best" if is_new_best else ""), "C5")
+            # plot([mean_accuracies], [std_accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.8, 1.0), filename=str(num_episodes) + "_test" + ("_new_best" if is_new_best else "") + "_accuracy")
         
     return True
 
@@ -105,7 +110,7 @@ def test(model, env, n_episodes=10, override_action=False):
             
             actions[-1].append(action.tolist())
                 
-        print("CUMULATIVE REWARD:", rewards_sum, "- NUM STEPS:", num_steps, "- VAL ACCURACY:", info['val_acc'])
+        print(i, ": CUMULATIVE REWARD:", rewards_sum, "- NUM STEPS:", num_steps, "- VAL ACCURACY:", info['val_acc'])
         rewards.append(rewards_sum)
         steps.append(num_steps)
         accuracies.append(info['val_acc'])
@@ -117,20 +122,25 @@ def test(model, env, n_episodes=10, override_action=False):
     
     env.reset()
     
-    return np.mean(return_accuracies, axis=0), np.min(num_steps), np.mean(actions, axis=0), np.std(actions, axis=0)
+    return np.mean(return_accuracies, axis=0), np.std(return_accuracies, axis=0), np.mean(actions, axis=0), np.std(actions, axis=0)
 
 
-def plot(arr, labels, y_lim=(0.0, 1.0), filename='basic_RL_results'):
-    for data, label in zip(arr, labels):
-        plt.plot(np.arange(len(data)), data, label=label)
+def plot(mean_arr, std_arr, labels, y_lim=(0.0, 1.0), filename='RL_results', filepath=None):
+    plt.clf()
+    for mean_data, std_data, label in zip(mean_arr, std_arr, labels):
+        plt.plot(np.arange(len(mean_data)), mean_data, label=label)
+        plt.fill_between(np.arange(len(std_data)), mean_data-std_data, mean_data+std_data, alpha=0.4)
 
     plt.legend()
     plt.ylim(y_lim)
-    plt.savefig(save_path + filename + '.svg')
+    if filepath is not None:
+        plt.savefig(filepath + filename + '.svg')
+    else:
+        plt.savefig(save_path + filename + '.svg')
                 
 
-def plot_actions(mean_actions, std_actions, label, color, save=True):
-    
+def plot_actions(mean_actions, std_actions, label, color, save=True, filepath=None):
+    plt.clf()
     for i in range(mean_actions.shape[1]):
         plt.plot(np.arange(len(mean_actions[:, i])), mean_actions[:, i], color=color)
         plt.fill_between(np.arange(len(mean_actions[:, i])), mean_actions[:, i] - std_actions[:, i], mean_actions[:, i] + std_actions[:, i], color=color, alpha=0.4)
@@ -138,58 +148,71 @@ def plot_actions(mean_actions, std_actions, label, color, save=True):
     # plt.legend()
     # plt.ylim((0, 1))
     if save:
-        plt.savefig(save_path + label.replace(" ", "_") + "_actions" + ".svg")
+        if filepath is not None:
+            plt.savefig(filepath + label.replace(" ", "_") + "_actions" + ".svg")
+        else:
+            plt.savefig(save_path + label.replace(" ", "_") + "_actions" + ".svg")
 
+
+def test_pipeline(model_path):
+    env = make_vec_env(SelfTeachingEnv, n_envs=1, env_kwargs={'EPOCHS_PER_STEP': 2, 'ID': gpu_num, 'N_TIMESTEPS': 150, "SIGNIFICANCE_DECAY": 0.0})
+    mean_accs, std_accs = [], []
+    model = SAC.load(model_path)
+    
+    mean_acc, std_acc, mean_actions, std_actions = test(model, env, override_action=[0.99, 0.992], n_episodes=30)
+    mean_accs.append(mean_acc)
+    std_accs.append(std_acc)
+        
+    mean_acc, std_acc, mean_actions, std_actions = test(model, env, n_episodes=30)
+    mean_accs.append(mean_acc)
+    std_accs.append(std_acc)
+    
+    mean_acc, std_acc, mean_actions, std_actions = test(model, env, override_action=True, n_episodes=10)
+    mean_accs.append(mean_acc)
+    std_accs.append(std_acc)
+    
+    plot(mean_accs, std_accs, labels=["manually set thresholds", "RL trained", "label only baseline"], y_lim=(0.8, 1.0), filename=model_path.split('/')[-2], filepath='/opt/workspace/host_storage_hdd/results/')
+
+
+def save_self(filepath):
+    filepath = filepath + 'code/'
+    os.makedirs(filepath)
+    filenames = ['main.py', 'model.py', 'env.py', 'preprocess.py']
+    
+    for filename in filenames:
+        shutil.copyfile(filename, filepath + filename)
+    
 
 if __name__ == '__main__':
+    # test_pipeline('/opt/workspace/host_storage_hdd/results/2020-01-08_17:30:00.436350/best_by_train_sac_self_teaching.zip')
+    # exit()
+    
     folder_name = str(datetime.now()).replace(" ", "_")
     save_path = '/opt/workspace/host_storage_hdd/results/' + folder_name + '/'
     os.makedirs(save_path)
-
-    min_steps_array = []
+    save_self(save_path)
     
-    env = make_vec_env(SelfTeachingEnv, n_envs=1, env_kwargs={'EPOCHS_PER_STEP': 2, 'ID': gpu_num, 'N_TIMESTEPS': 150, "SIGNIFICANCE_DECAY": 0.0}) # , "HISTORY_LEN": 10, "HISTORY_MEAN": True})
-    model = SAC(MlpPolicy, env, verbose=1, policy_kwargs={'layers': [256, 512, 256, 128]})
-    # model = SAC.load(save_path + '/best_sac_self_teaching_decay_0.05.zip')
-    # model.set_env(env)
-
-    """
-        # generate_expert_traj(expert_behaviour, 'expert_self_teaching', env, n_episodes=50)
-        dataset = ExpertDataset(expert_path=save_path + '/expert_self_teaching.npz', traj_limitation=-1, batch_size=64)
-
-        model.pretrain(dataset, n_epochs=200)
-        
-        pretrain_accuracies, min_steps, mean_actions, std_actions = test(model, env)
-        min_steps_array.append(min_steps)
-        plot_actions(mean_actions, std_actions, "pretrained", "C0")
-        
-        model = SAC.load(save_path + '/best_sac_self_teaching_decay_0.05.zip')    
-        basic_trained_accuracies, min_steps, mean_actions, std_actions = test(model, env)
-        plot_actions(mean_actions, std_actions, "best", "C1")
-        exit()
-        min_steps_array.append(min_steps)
-        
-        model = SAC.load(save_path + '/best_sac_self_teaching_1.zip')
-        ep_limit_accuracies, min_steps = test(model, env)
-        min_steps_array.append(min_steps)
-        
-        labeled_only_accuracies, min_steps = test(model, env, override_action=True)
-        min_steps_array.append(min_steps)
-        
-        min_steps = np.min(min_steps_array)
-        arr_to_plot = []
-        arr_to_plot.append(pretrain_accuracies[:min_steps])
-        arr_to_plot.append(basic_trained_accuracies[:min_steps])
-        # arr_to_plot.append(ep_limit_accuracies[:min_steps])
-        arr_to_plot.append(labeled_only_accuracies[:min_steps])
-        
-        plot(arr_to_plot, labels=["pretrained", "RL trained - best", "label only baseline"], y_lim=(0.8, 1.0))
-        exit()
-    """
+    env = make_vec_env(SelfTeachingEnv, 
+                       n_envs=1, 
+                       env_kwargs={'EPOCHS_PER_STEP': 2, 'ID': gpu_num, 'N_TIMESTEPS': 150, "SIGNIFICANCE_DECAY": 0.0}) # , "HISTORY_LEN": 10, "HISTORY_MEAN": True})
     
-    model.learn(total_timesteps=500000, log_interval=10, callback=learn_callback)
+    model = SAC(MlpPolicy, 
+                env,
+                learning_starts=1,
+                learning_rate=lambda x : 0.00001 + x * 0.00034, 
+                # tau=0.003, 
+                verbose=1, 
+                policy_kwargs={'layers': [256, 512, 256, 128]})
+    """
+    model = SAC.load('/opt/workspace/host_storage_hdd/results/2020-01-07_19:21:48.837678/best_by_test_sac_self_teaching.zip')
+    model.set_env(env)
+    model.learning_rate = lambda x : 0.00001 + x * 0.00002
+    model.learning_starts = 5000
+    model.tau = 0.003
+    """
+    model.learn(total_timesteps=400000, log_interval=10, callback=learn_callback)
     model.save(save_path + 'final_sac_self_teaching')
 
-    accuracies, min_steps, mean_actions, std_actions = test(model, env)
+    mean_accuracies, std_accuracies, mean_actions, std_actions = test(model, env)
     plot_actions(mean_actions, std_actions, "final", "C5")
-    plot([accuracies], labels=["final"], y_lim=(0.8, 1.0))
+    plot([mean_accuracies], [std_accuracies], labels=["final"], y_lim=(0.8, 1.0), filename='final_RL_results')
