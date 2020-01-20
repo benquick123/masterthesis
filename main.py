@@ -1,7 +1,7 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-gpu_num = '2'
+gpu_num = '3,2'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -11,18 +11,31 @@ tf.get_logger().setLevel('ERROR')
 
 from datetime import datetime
 import shutil
-import gym
 import numpy as np
 np.set_printoptions(formatter={'float': lambda x: "{0:0.2f}".format(x)})
+
 from matplotlib import pyplot as plt
 
-from stable_baselines.common.policies import MlpLstmPolicy
-from stable_baselines.sac import MlpPolicy
+import torch.multiprocessing as mp
+
+from multiprocessing import Process
+from multiprocessing.managers import BaseManager
+
+# from mpi4py import MPI
+
+"""
+# from stable_baselines.sac import MlpPolicy
+# from stable_baselines.deepq import MlpPolicy
+from stable_baselines.ddpg import MlpPolicy
+# from stable_baselines.common.policies import MlpPolicy
 from stable_baselines.common import make_vec_env
 from stable_baselines.gail import generate_expert_traj, ExpertDataset
-from stable_baselines import PPO2, SAC
+from stable_baselines import PPO2, SAC, DQN, DDPG, ACKTR, logger
+from stable_baselines.common.vec_env import SubprocVecEnv
+"""
 
-from env import SelfTeachingEnvV1 as SelfTeachingEnv
+from env import SelfTeachingEnvV0 as SelfTeachingEnv
+from sac_multi import SAC_Trainer, ReplayBuffer, share_parameters, worker
 
 best_train_mean_episode_rewards = 0
 best_test_mean_episode_rewards = 0
@@ -31,34 +44,34 @@ def learn_callback(_locals, _globals):
     global best_train_mean_episode_rewards
     global best_test_mean_episode_rewards
     
-    if _locals['episode_rewards'][-1] == 0:        
-        num_episodes = len(_locals['episode_rewards'])
-        if _locals['step'] < _locals['self'].learning_starts:
+    if _locals['episode_reward'] == 0 and _locals['worker_id'] == 0:
+        num_episodes = _locals['n_episodes'] + 1
+        if _locals['step'] < _locals['learning_starts']:
             return True
-        
+ 
         reward_lookback = 20
-        test_interval = int(5 + (1 - (_locals['step'] - _locals['self'].learning_starts) / (_locals['total_timesteps'] - _locals['self'].learning_starts)) * 65)
+        # test_interval = int(5 + (1 - (['step'] - _locals['self'].learning_starts) / (_locals['total_timesteps'] - _locals['self'].learning_starts)) * 65)
         test_interval = 1
         test_episodes = 5
         
-        mean_episode_rewards = np.mean(_locals['episode_rewards'][-(reward_lookback + 1):-1])
+        mean_episode_rewards = np.mean(_locals['rewards'][-reward_lookback:])
             
         if mean_episode_rewards > best_train_mean_episode_rewards:
             best_mean_episode_rewards = mean_episode_rewards
-            _locals['self'].save(save_path + 'best_by_train_sac_self_teaching')
-            
+            _locals['sac_trainer'].save_model(save_path + 'best_by_train_sac_self_teaching')
+        
         if num_episodes % test_interval == 0:
-            mean_accuracies, std_accuracies, mean_actions, std_actions = test(_locals['self'], _locals['self'].env, n_episodes=test_episodes)
+            mean_accuracies, std_accuracies, mean_actions, std_actions = test(_locals['sac_trainer'], _locals['env'], n_episodes=test_episodes)
             
             is_new_best = False
             if mean_accuracies[-1] > best_test_mean_episode_rewards:
                 best_test_mean_episode_rewards = mean_accuracies[-1]
-                _locals['self'].save(save_path + 'best_by_test_sac_self_teaching')
+                _locals['sac_trainer'].save_model(save_path + 'best_by_test_sac_self_teaching')
                 is_new_best = True
             
-            # plot_actions(mean_actions, std_actions, str(num_episodes) + "_test" + ("_new_best" if is_new_best else ""), "C5")
-            # plot([mean_accuracies], [std_accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.8, 1.0), filename=str(num_episodes) + "_test" + ("_new_best" if is_new_best else "") + "_accuracy")
-        
+            plot_actions(mean_actions, std_actions, str(num_episodes) + "_test" + ("_new_best" if is_new_best else ""), "C5")
+            plot([mean_accuracies], [std_accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.8, 1.0), filename=str(num_episodes) + "_test" + ("_new_best" if is_new_best else "") + "_accuracy_%.4f" % (mean_accuracies[-1]))
+    
     return True
 
 
@@ -90,7 +103,7 @@ def test(model, env, n_episodes=10, override_action=False):
         while not done:
             env.render()
                         
-            action, _states = model.predict(obs)
+            action = model.policy_net.get_action(obs, deterministic=True)
             if override_action:
                 if isinstance(override_action, list):
                     action = np.array([override_action])
@@ -176,8 +189,8 @@ def test_pipeline(model_path):
 
 def save_self(filepath):
     filepath = filepath + 'code/'
-    os.makedirs(filepath)
-    filenames = ['main.py', 'model.py', 'env.py', 'preprocess.py']
+    os.makedirs(filepath, exist_ok=True)
+    filenames = ['main.py', 'model.py', 'env.py', 'sac_multi', 'preprocess.py']
     
     for filename in filenames:
         shutil.copyfile(filename, filepath + filename)
@@ -187,32 +200,98 @@ if __name__ == '__main__':
     # test_pipeline('/opt/workspace/host_storage_hdd/results/2020-01-08_17:30:00.436350/best_by_train_sac_self_teaching.zip')
     # exit()
     
-    folder_name = str(datetime.now()).replace(" ", "_")
+    folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-")
     save_path = '/opt/workspace/host_storage_hdd/results/' + folder_name + '/'
-    os.makedirs(save_path)
-    save_self(save_path)
+    # os.makedirs(save_path, exist_ok=True)
+    # save_self(save_path)
     
-    env = make_vec_env(SelfTeachingEnv, 
-                       n_envs=1, 
-                       env_kwargs={'EPOCHS_PER_STEP': 2, 'ID': gpu_num, 'N_TIMESTEPS': 150, "SIGNIFICANCE_DECAY": 0.0}) # , "HISTORY_LEN": 10, "HISTORY_MEAN": True})
+    BaseManager.register('ReplayBuffer', ReplayBuffer)
+    manager = BaseManager()
+    manager.start()
+    replay_buffer = manager.ReplayBuffer(100000)
+
+    env_kwargs = {'EPOCHS_PER_STEP': 2, 'ID': gpu_num[-1], 'N_TIMESTEPS': 150, "SIGNIFICANCE_DECAY": 0.0}
+    env = SelfTeachingEnv(**env_kwargs)
+    action_dim = env.action_space.shape[0]
+    state_dim  = env.observation_space.shape[0]
+    env.close()
+
+    sac_trainer = SAC_Trainer(replay_buffer, state_dim, action_dim, hidden_layer_sizes=[512, 1024, 512, 256])
+
+    sac_trainer.soft_q_net1.share_memory()
+    sac_trainer.soft_q_net2.share_memory()
+    sac_trainer.target_soft_q_net1.share_memory()
+    sac_trainer.target_soft_q_net2.share_memory()
+    sac_trainer.policy_net.share_memory()
+    share_parameters(sac_trainer.soft_q_optimizer1)
+    share_parameters(sac_trainer.soft_q_optimizer2)
+    share_parameters(sac_trainer.policy_optimizer)
+    share_parameters(sac_trainer.alpha_optimizer)
+
+    num_workers = 1
+    for i in range(num_workers):
+        process = Process(target=worker, 
+                          kwargs={'worker_id': i,
+                                  'sac_trainer': sac_trainer,
+                                  'env_fn': SelfTeachingEnv,
+                                  'env_kwargs': env_kwargs,
+                                  'replay_buffer': replay_buffer,
+                                  'num_steps': 200000,
+                                  'learning_starts': 0,
+                                  'callback': learn_callback}
+                          )
+        process.daemon = True
+        process.start()
+        process.join()
+    
+"""
+    rank = MPI.COMM_WORLD.Get_rank()
+    if rank == 0:    
+        folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-")
+        save_path = '/opt/workspace/host_storage_hdd/results/' + folder_name + '/'
+        os.makedirs(save_path, exist_ok=True)
+        save_self(save_path)
+        logger.configure()
+        
+        size = MPI.COMM_WORLD.Get_size()
+        for i in range(1, size):
+            MPI.COMM_WORLD.send(save_path, dest=i)
+    else:
+        logger.configure(format_strs=[])
+        save_path=MPI.COMM_WORLD.recv(source=0)
+    
+    env = make_vec_env(SelfTeachingEnv, n_envs=1, env_kwargs={'EPOCHS_PER_STEP': 2, 'ID': gpu_num[-1], 'N_TIMESTEPS': 150, "SIGNIFICANCE_DECAY": 0.0})
+    
+    model = ACKTR(MlpPolicy, env,
+                tensorboard_log=save_path,
+                verbose=1,
+                policy_kwargs={'layers': [512, 1024, 512, 256]}
+                )
+                
+    model = DDPG(MlpPolicy, 
+                 env,
+                 buffer_size=100000,
+                 observation_range=(0.0, 10.0),
+                 tensorboard_log=save_path,
+                 verbose=1,
+                 policy_kwargs={'layers': [512, 1024, 512, 256]})
     
     model = SAC(MlpPolicy, 
-                env,
-                learning_starts=1,
-                learning_rate=lambda x : 0.00001 + x * 0.00034, 
-                # tau=0.003, 
-                verbose=1, 
-                policy_kwargs={'layers': [256, 512, 256, 128]})
-    """
-    model = SAC.load('/opt/workspace/host_storage_hdd/results/2020-01-07_19:21:48.837678/best_by_test_sac_self_teaching.zip')
-    model.set_env(env)
-    model.learning_rate = lambda x : 0.00001 + x * 0.00002
-    model.learning_starts = 5000
-    model.tau = 0.003
-    """
+                env, 
+                learning_starts=5000, 
+                buffer_size=100000,
+                learning_rate=lambda x : 0.00001 + x * 0.00034,
+                tau=0.003,
+                tensorboard_log=save_path,
+                verbose=1,
+                policy_kwargs={'layers': [512, 1024, 512, 256]}
+                )
+    
     model.learn(total_timesteps=400000, log_interval=10, callback=learn_callback)
-    model.save(save_path + 'final_sac_self_teaching')
+    if rank == 0:
+        model.save(save_path + 'final_sac_self_teaching')
 
-    mean_accuracies, std_accuracies, mean_actions, std_actions = test(model, env)
-    plot_actions(mean_actions, std_actions, "final", "C5")
-    plot([mean_accuracies], [std_accuracies], labels=["final"], y_lim=(0.8, 1.0), filename='final_RL_results')
+        mean_accuracies, std_accuracies, mean_actions, std_actions = test(model, env)
+        plot_actions(mean_actions, std_actions, "final", "C5")
+        plot([mean_accuracies], [std_accuracies], labels=["final"], y_lim=(0.8, 1.0), filename='final_RL_results')
+"""
