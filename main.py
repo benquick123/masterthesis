@@ -1,7 +1,7 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-gpu_num = '3,2'
+gpu_num = '1,3,2'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -51,26 +51,29 @@ def learn_callback(_locals, _globals):
  
         reward_lookback = 20
         # test_interval = int(5 + (1 - (['step'] - _locals['self'].learning_starts) / (_locals['total_timesteps'] - _locals['self'].learning_starts)) * 65)
-        test_interval = 1
+        test_interval = 40
         test_episodes = 5
         
         mean_episode_rewards = np.mean(_locals['rewards'][-reward_lookback:])
             
         if mean_episode_rewards > best_train_mean_episode_rewards:
             best_mean_episode_rewards = mean_episode_rewards
-            _locals['sac_trainer'].save_model(save_path + 'best_by_train_sac_self_teaching')
+            _locals['sac_trainer'].save_model(_locals['log_path'] + 'best_by_train_sac_self_teaching')
         
         if num_episodes % test_interval == 0:
-            mean_accuracies, std_accuracies, mean_actions, std_actions = test(_locals['sac_trainer'], _locals['env'], n_episodes=test_episodes)
-            
-            is_new_best = False
+            mean_accuracies, std_accuracies, mean_actions, std_actions = test(_locals['sac_trainer'], _locals['env'], n_episodes=test_episodes, scale=True)
+
             if mean_accuracies[-1] > best_test_mean_episode_rewards:
                 best_test_mean_episode_rewards = mean_accuracies[-1]
-                _locals['sac_trainer'].save_model(save_path + 'best_by_test_sac_self_teaching')
-                is_new_best = True
+                _locals['sac_trainer'].save_model(_locals['log_path'] + 'best_by_test_sac_self_teaching')
+
+                plot_actions(mean_actions, std_actions, label=str(num_episodes) + "_test", color="C5", filepath=_locals['log_path'])
+                plot([mean_accuracies], [std_accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.8, 1.0), filename=str(num_episodes) + "_test" + "_accuracy_%.4f" % (mean_accuracies[-1]), filepath=_locals['log_path'])
             
-            plot_actions(mean_actions, std_actions, str(num_episodes) + "_test" + ("_new_best" if is_new_best else ""), "C5")
-            plot([mean_accuracies], [std_accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.8, 1.0), filename=str(num_episodes) + "_test" + ("_new_best" if is_new_best else "") + "_accuracy_%.4f" % (mean_accuracies[-1]))
+            if 'writer' in _locals:
+                writer = _locals['writer']
+                writer.add_scalar('Actions/meanTestActions', np.mean(mean_actions), _locals['step'])
+                writer.add_scalar('Accuracies/testAccuracies', mean_accuracies[-1], _locals['step'])
     
     return True
 
@@ -87,7 +90,7 @@ def expert_behaviour(obs):
     return output_action
 
 
-def test(model, env, n_episodes=10, override_action=False):
+def test(model, env, n_episodes=10, override_action=False, scale=False):
     rewards = []
     steps = []
     accuracies = []
@@ -131,7 +134,8 @@ def test(model, env, n_episodes=10, override_action=False):
     print("MEAN REWARD:", np.mean(rewards), "- MEAN STEPS:", np.mean(num_steps), "- MEAN ACCURACY:", np.mean(accuracies))
     
     actions = np.array(actions)
-    actions_mean = np.mean(actions, axis=0)
+    if scale:
+        actions = (actions + 1) / 2
     
     env.reset()
     
@@ -190,7 +194,7 @@ def test_pipeline(model_path):
 def save_self(filepath):
     filepath = filepath + 'code/'
     os.makedirs(filepath, exist_ok=True)
-    filenames = ['main.py', 'model.py', 'env.py', 'sac_multi', 'preprocess.py']
+    filenames = ['main.py', 'model.py', 'env.py', 'sac_multi.py', 'preprocess.py']
     
     for filename in filenames:
         shutil.copyfile(filename, filepath + filename)
@@ -202,46 +206,57 @@ if __name__ == '__main__':
     
     folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-")
     save_path = '/opt/workspace/host_storage_hdd/results/' + folder_name + '/'
-    # os.makedirs(save_path, exist_ok=True)
-    # save_self(save_path)
+    os.makedirs(save_path, exist_ok=True)
+    save_self(save_path)
     
     BaseManager.register('ReplayBuffer', ReplayBuffer)
     manager = BaseManager()
     manager.start()
     replay_buffer = manager.ReplayBuffer(100000)
 
-    env_kwargs = {'EPOCHS_PER_STEP': 2, 'ID': gpu_num[-1], 'N_TIMESTEPS': 150, "SIGNIFICANCE_DECAY": 0.0}
-    env = SelfTeachingEnv(**env_kwargs)
+    # env_kwargs = {'EPOCHS_PER_STEP': 2, 'N_TIMESTEPS': 150, "SIGNIFICANCE_DECAY": 0.0}
+    env_kwargs = {'id': 'MountainCarContinuous-v0'}
+    # env = SelfTeachingEnv(**env_kwargs)
+    import gym
+    env = gym.make(**env_kwargs)
     action_dim = env.action_space.shape[0]
     state_dim  = env.observation_space.shape[0]
     env.close()
 
     sac_trainer = SAC_Trainer(replay_buffer, state_dim, action_dim, hidden_layer_sizes=[512, 1024, 512, 256])
 
-    sac_trainer.soft_q_net1.share_memory()
-    sac_trainer.soft_q_net2.share_memory()
-    sac_trainer.target_soft_q_net1.share_memory()
-    sac_trainer.target_soft_q_net2.share_memory()
+    sac_trainer.q_net_1.share_memory()
+    sac_trainer.q_net_2.share_memory()
     sac_trainer.policy_net.share_memory()
-    share_parameters(sac_trainer.soft_q_optimizer1)
-    share_parameters(sac_trainer.soft_q_optimizer2)
+    sac_trainer.value_net.share_memory()
+    sac_trainer.target_value_net.share_memory()
+    share_parameters(sac_trainer.q_optimizer_1)
+    share_parameters(sac_trainer.q_optimizer_2)
     share_parameters(sac_trainer.policy_optimizer)
     share_parameters(sac_trainer.alpha_optimizer)
+    share_parameters(sac_trainer.v_optimizer)
 
+    worker_offset = 0
     num_workers = 1
-    for i in range(num_workers):
-        process = Process(target=worker, 
+    processes = []
+    for i in range(worker_offset, num_workers + worker_offset):
+        process = Process(target=worker,
                           kwargs={'worker_id': i,
                                   'sac_trainer': sac_trainer,
-                                  'env_fn': SelfTeachingEnv,
+                                  'env_fn': gym.make, # SelfTeachingEnv, # gym.make,
                                   'env_kwargs': env_kwargs,
                                   'replay_buffer': replay_buffer,
-                                  'num_steps': 200000,
-                                  'learning_starts': 0,
-                                  'callback': learn_callback}
+                                  'num_steps': 300000 // num_workers,
+                                  'learning_starts': 100 // num_workers,
+                                  'callback': learn_callback,
+                                  'log_path': save_path}
                           )
         process.daemon = True
+        processes.append(process)
+        
+    for process in processes:
         process.start()
+    for process in processes:
         process.join()
     
 """

@@ -1,44 +1,31 @@
-import keras as k
-from keras.datasets import mnist
-from keras.layers import Input, Dense
 from matplotlib import pyplot as plt
 import numpy as np
 from sklearn.model_selection import train_test_split
 from sklearn.cluster import KMeans
 
+from torch.optim import Adam
+from torch.nn import MSELoss
+from torch import Tensor
+
+from model import Autoencoder
+
 
 def train_autoencoder(x):
-    input_img = Input(shape=(784,))
-    encoded = Dense(128, activation='relu')(input_img)
-    encoded = Dense(64, activation='relu')(encoded)
+    autoencoder = Autoencoder(np.prod(x.shape[1:]).astype(np.int32), [128, 64, 32], [32, 64, 128]).cuda()
+    optimizer = Adam(autoencoder.parameters(), lr=0.001)
+    loss = MSELoss()
+    autoencoder.fit(x, x, optimizer, loss, epochs=100, batch_size=32, verbose=0)
     
-    hidden_features = Dense(32, activation='relu')(encoded)
-
-    decoded = Dense(64, activation='relu')(hidden_features)
-    decoded = Dense(128, activation='relu')(decoded)
-    decoded = Dense(784, activation='sigmoid')(decoded)
-    
-    autoencoder = k.models.Model(input_img, decoded)    
-    autoencoder.compile(optimizer='adam', loss='mse')
-    autoencoder.fit(x, x, batch_size=32, epochs=100, verbose=0)
-    
-    encoder = k.models.Model(autoencoder.input, autoencoder.layers[3].output)
-    
-    return autoencoder, encoder
-    
-    # fig, ax = plt.subplots(10, 2, sharex=True, sharey=True)
-    # for i, row in enumerate(ax):
-    #     row[0].imshow(x[i].reshape((28, 28)), cmap='gray')
-    #     row[1].imshow(autoencoder.predict(x[i:i+1]).reshape((28, 28)), cmap='gray')
-    #     print(encoder.predict(x[i:i+1]))
-        
-    # plt.draw()
-    # plt.savefig('/opt/workspace/host_storage_hdd/results/autoencoder.png')
+    return autoencoder, autoencoder.encoder
     
 
 def cluster_images(x, encoder, n_clusters=80, plot=False):
     kmeans = KMeans(n_clusters=n_clusters)
-    x_hidden_features = encoder.predict(x)    
+    
+    x = Tensor(x).cuda()
+    x_hidden_features = encoder(x).cpu().detach().numpy()
+    x = x.cpu().detach().numpy()
+    
     groups = kmeans.fit_predict(x_hidden_features)
 
     if plot:
@@ -60,6 +47,8 @@ def cluster_images(x, encoder, n_clusters=80, plot=False):
     
 
 if __name__ == "__main__":
+    pass
+    """
     (X_train, y_train), (X_test, y_test) = mnist.load_data()
     
     # reshape, cast and scale in one step.
@@ -72,5 +61,6 @@ if __name__ == "__main__":
     autoencoder, encoder = train_autoencoder(X_train)
     
     cluster_images(np.concatenate([X_val, X_unlabel], axis=0), encoder)
+    """
     
     

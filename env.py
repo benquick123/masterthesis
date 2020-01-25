@@ -1,10 +1,14 @@
 import gym
 import pickle
 import numpy as np
-from keras.datasets import mnist
-from keras.utils import np_utils
+from torchvision.datasets import MNIST
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import accuracy_score, log_loss
+
+import torch
+from torch.optim import Adam
+from torch.nn import NLLLoss
+from torch import Tensor
 
 from hidden_features import train_autoencoder, cluster_images
 from model import MNISTModel
@@ -42,6 +46,8 @@ class SelfTeachingEnvV0(gym.Env):
         assert 'HISTORY_LEN' in self.hyperparams and self.hyperparams['HISTORY_LEN'] >= 1
         assert 'HISTORY_MEAN' in self.hyperparams and (self.hyperparams['HISTORY_MEAN'] and self.hyperparams['HISTORY_LEN'] >= 2 or not self.hyperparams['HISTORY_MEAN'])
         
+        self.hyperparams['GPU_ID'] = self.hyperparams['ID'] % torch.cuda.device_count()
+        
         self.model = None
         
         self._load_data()
@@ -51,7 +57,13 @@ class SelfTeachingEnvV0(gym.Env):
     
     def _generate_data(self, save=True):
         print("No data exist. Generating.")
-        (X_train, y_train), (X_test, y_test) = mnist.load_data()
+        
+        mnist_train = MNIST('/opt/workspace/host_storage_hdd', download=True, train=True)
+        mnist_test = MNIST('/opt/workspace/host_storage_hdd', download=True, train=False)
+        X_train = mnist_train.data.numpy()
+        y_train = mnist_train.targets.numpy()
+        X_test = mnist_test.data.numpy()
+        y_test = mnist_test.targets.numpy()
         
         # reshape, cast and scale in one step.
         X_train = X_train.reshape(X_train.shape[:1] + (np.prod(X_train.shape[1:]), )).astype('float32') / 255
@@ -60,11 +72,14 @@ class SelfTeachingEnvV0(gym.Env):
         
         self.X_test = X_test.reshape(X_test.shape[:1] + (np.prod(X_test.shape[1:]), )).astype('float32') / 255
         
-        self.y_train = np_utils.to_categorical(y_train)
-        self.y_test = np_utils.to_categorical(y_test)
-        self.y_val = np_utils.to_categorical(y_val)
+        num_classes = len(np.unique(y_train))
+        to_categorical = lambda y, n : np.eye(n, dtype=y.dtype)[y]
+
+        self.y_train = to_categorical(y_train, num_classes)
+        self.y_test = to_categorical(y_test, num_classes)
+        self.y_val = to_categorical(y_val, num_classes)
         
-        autoencoder, encoder = train_autoencoder(X_train)
+        _, encoder = train_autoencoder(self.X_train)
         groups, hidden_representations, self.group_centers = cluster_images(np.concatenate([self.X_unlabel, self.X_val], axis=0), encoder, n_clusters=self.hyperparams['N_CLUSTERS'], plot=False)
         self.X_unlabel_groups, self.X_unlabel_hidden = groups[:len(self.X_unlabel)], hidden_representations[:len(self.X_unlabel)]
         self.X_val_groups, self.X_val_hidden = groups[len(self.X_unlabel):], hidden_representations[len(self.X_unlabel):]
@@ -107,8 +122,10 @@ class SelfTeachingEnvV0(gym.Env):
     def _initialize_model(self):
         if self.model is None:
             print("Initializing model.")
-            self.model = MNISTModel(self.X_train.shape[1:], self.y_train.shape[1])
-            self.model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+            self.model = MNISTModel(self.X_train.shape[1], self.y_train.shape[1]).cuda(self.hyperparams['GPU_ID'])
+            self.model.reset()
+            self.model_optimizer = Adam(self.model.parameters(), lr=0.001)
+            self.model_loss = NLLLoss()
         else:
             self.model.reset()
             
@@ -136,7 +153,6 @@ class SelfTeachingEnvV0(gym.Env):
     def step(self, action):
         action = (action + 1) / 2
         self.last_action = np.sort(action.reshape(-1))
-        print(self.last_action)
         
         tau1, tau2 = self.last_action[0], self.last_action[1]
         assert tau1 <= tau2
@@ -146,22 +162,22 @@ class SelfTeachingEnvV0(gym.Env):
         y_unlabel_estimates_indices = (y_unlabel_estimates_max > tau1) & (y_unlabel_estimates_max < tau2)
         self.len_selected_samples = np.sum(y_unlabel_estimates_indices)
         
-        y_pred_binary = np.zeros_like(self.last_y_unlabel_pred)
+        y_pred_binary = torch.zeros(self.last_y_unlabel_pred.shape)
         for i in range(len(y_unlabel_estimates_argmax)):
             y_pred_binary[i, y_unlabel_estimates_argmax[i]] = 1.0
         
-        history = self.model.fit(np.concatenate([self.X_train, self.X_unlabel[y_unlabel_estimates_indices]], axis=0),
-                        np.concatenate([self.y_train, y_pred_binary[y_unlabel_estimates_indices]], axis=0), 
+        self.model.fit(np.concatenate((self.X_train, self.X_unlabel[y_unlabel_estimates_indices]), 0),
+                        np.concatenate((self.y_train, y_pred_binary[y_unlabel_estimates_indices]), 0),
+                        optimizer=self.model_optimizer,
+                        loss_fn=self.model_loss,
                         epochs=self.hyperparams['EPOCHS_PER_STEP'], 
                         batch_size=self.hyperparams['BATCH_SIZE'], 
-                        verbose=0)
+                        verbose=0,
+                        gpu_id=self.hyperparams['GPU_ID'])
         
-        self.last_train_loss = history.history['loss'][0]
-        self.last_train_accuracy = history.history['accuracy'][0]
-        
-        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
-        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
-        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_val_pred = self.model.predict(self.X_val, gpu_id=self.hyperparams['GPU_ID'])   # , batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, gpu_id=self.hyperparams['GPU_ID'])   # , batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_label_pred = self.model.predict(self.X_train, gpu_id=self.hyperparams['GPU_ID'])   # , batch_size=self.hyperparams['PRED_BATCH_SIZE'])
         
         self.y_unlabel_estimates = (1 - self.hyperparams['Y_ESTIMATED_LR']) * self.y_unlabel_estimates + self.hyperparams['Y_ESTIMATED_LR'] * self.last_y_unlabel_pred
         self.y_unlabel_estimates /= np.reshape(np.sum(self.y_unlabel_estimates, axis=1), (-1, 1))
@@ -175,6 +191,8 @@ class SelfTeachingEnvV0(gym.Env):
         
         self.last_val_accuracy = new_accuracy
         self.last_val_loss = log_loss(self.y_val, self.last_y_val_pred)
+        self.last_train_accuracy = accuracy_score(np.argmax(self.y_train, axis=1), np.argmax(self.last_y_label_pred, axis=1))
+        self.last_train_loss = log_loss(self.y_train, self.last_y_label_pred)
         
         curr_state = self._get_state()
         self.last_state = np.append(self.last_state.reshape((self.hyperparams['HISTORY_LEN'] if not self.hyperparams['HISTORY_MEAN'] else 1, -1)), curr_state.reshape((1, -1)), axis=0)
@@ -198,9 +216,9 @@ class SelfTeachingEnvV0(gym.Env):
         
         self.last_action = np.zeros(self.action_space.shape[0])
         
-        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
-        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
-        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_val_pred = self.model.predict(self.X_val, gpu_id=self.hyperparams['GPU_ID'])   # , batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, gpu_id=self.hyperparams['GPU_ID'])   # , batch_size=self.hyperparams['PRED_BATCH_SIZE'])
+        self.last_y_label_pred = self.model.predict(self.X_train, gpu_id=self.hyperparams['GPU_ID'])   # , batch_size=self.hyperparams['PRED_BATCH_SIZE'])
         
         self.last_val_accuracy = accuracy_score(np.argmax(self.y_val, axis=1), np.argmax(self.last_y_val_pred, axis=1))
         self.last_train_accuracy = accuracy_score(np.argmax(self.y_train, axis=1), np.argmax(self.last_y_label_pred, axis=1))
@@ -233,7 +251,7 @@ class SelfTeachingEnvV0(gym.Env):
             render_string += "\nState:\n" + str(self.last_state[-1][:-5].reshape((self.y_val.shape[1], self.y_val.shape[1])))[:-1]
             render_string += "\n " + str(['%.2f' % (element) for element in self.last_state[-1][-5:]]).replace("'", "").replace(",", "")
         
-        print(render_string, file=open("/opt/workspace/host_storage_hdd/tmp_" + self.hyperparams['ID'] + ".log", "w"))
+        print(render_string, file=open("/opt/workspace/host_storage_hdd/tmp_" + str(self.hyperparams['ID']) + ".log", "w"))
         
         return render_string
 
