@@ -233,10 +233,10 @@ class PolicyNetwork(nn.Module):
         stoh_action = self.action_range * torch.tanh(stoh_action)
         det_action = self.action_range * torch.tanh(mean)
         log_pi = (log_pi - torch.log(1.0 - stoh_action ** 2 + epsilon)).sum(dim=1, keepdim=True)
-        return mean, stoh_action, log_pi
+        return det_action, stoh_action, log_pi
 
     def get_action(self, state, deterministic):
-        state = torch.FloatTensor(state).unsqueeze(0).cuda().view((-1, self.state_dim))
+        state = state.unsqueeze(0).view((-1, self.state_dim)).cuda()
 
         mean, log_std = self.forward(state)
         if deterministic:
@@ -247,7 +247,7 @@ class PolicyNetwork(nn.Module):
             z = normal.sample(sample_shape=mean.size()).cuda()
             action = self.action_range * torch.tanh(mean + std * z)
             
-        return action.cpu().detach().numpy()
+        return action[0]
 
 
 class Alpha(nn.Module):
@@ -296,7 +296,7 @@ class SAC_Trainer():
         self.policy_net = self.policy_net.cuda()
         self.log_alpha = self.log_alpha.cuda()
 
-    def update(self, batch_size, auto_entropy=True, gamma=0.99, soft_tau=0.003):
+    def update(self, batch_size, gamma=0.99, soft_tau=0.003):
         state, action, reward, next_state, done = self.replay_buffer.sample(batch_size)
 
         state = torch.FloatTensor(state).cuda()
@@ -305,81 +305,90 @@ class SAC_Trainer():
         reward = torch.FloatTensor(reward).unsqueeze(1).cuda()
         done = torch.FloatTensor(np.float32(done)).unsqueeze(1).cuda()
         
+        self.alpha_optimizer.zero_grad()
+        self.policy_optimizer.zero_grad()
+        self.q_optimizer_1.zero_grad()
+        self.q_optimizer_2.zero_grad()
+        self.v_optimizer.zero_grad()        
+
         # get stoh_action, det_action and log_pi
         det_action, stoh_action, log_pi = self.policy_net.evaluate(state)
         
-        # compute new alpha and backprop
-        if auto_entropy:
-            a_loss = -(self.log_alpha() * (log_pi - self.action_dim).detach()).mean()
-            self.alpha_optimizer.zero_grad()
-            a_loss.backward()
-            self.alpha_optimizer.step()
+        # compute new alpha and backprop it
+        a_loss = -(self.log_alpha() * (log_pi - self.action_dim).detach()).mean()
+        a_loss.backward()
+        self.alpha_optimizer.step()
+        self.alpha = self.log_alpha().exp()
             
-            self.alpha = self.log_alpha().exp()
-        else:
-            self.alpha = 1.0
-            a_loss = 0.0
-            
-        target_v_next = self.value_net(next_state)
-        q_1 = self.q_net_1(state, stoh_action.detach())
-        q_2 = self.q_net_2(state, stoh_action.detach())
+        with torch.no_grad():
+            target_v_next = self.target_value_net(next_state)
+            q_backup = reward + gamma * (1 - done) * target_v_next
         
-        q_backup = reward + gamma * (1 - done) * target_v_next
-        q_loss_1 = self.q_criterion_1(q_1, q_backup.detach())
-        self.q_optimizer_1.zero_grad()
+        q_loss_1 = self.q_criterion_1(self.q_net_1(state, action), q_backup.detach())
         q_loss_1.backward()
         self.q_optimizer_1.step()
-        q_loss_2 = self.q_criterion_2(q_2, q_backup.detach())
-        self.q_optimizer_2.zero_grad()
+        
+        q_loss_2 = self.q_criterion_2(self.q_net_2(state, action), q_backup.detach())
         q_loss_2.backward()
         self.q_optimizer_2.step()
         
-        v_backup = torch.min(q_1, q_2) - self.alpha * log_pi
-        v_loss = self.v_criterion(self.value_net(state), v_backup.detach())
-        self.v_optimizer.zero_grad()
-        v_loss.backward()
-        self.v_optimizer.step()
+        q_1_act = self.q_net_1(state, stoh_action)
+        q_2_act = self.q_net_1(state, stoh_action)
         
-        p_loss = (self.alpha * log_pi - q_1.detach()).mean()
-        self.policy_optimizer.zero_grad()
+        p_loss = (self.alpha * log_pi - q_1_act).mean()
         p_loss.backward()
         self.policy_optimizer.step()
+        
+        with torch.no_grad():
+            v_backup = torch.min(q_1_act, q_2_act) - self.alpha * log_pi
+        v_loss = self.v_criterion(self.value_net(state), v_backup.detach())
+        v_loss.backward()
+        self.v_optimizer.step()
         
         for target_param, param in zip(self.target_value_net.parameters(), self.value_net.parameters()):
             target_param.data.copy_(target_param.data * (1.0 - soft_tau) + param.data * soft_tau)
         
         return a_loss, q_loss_1, q_loss_2, v_loss, p_loss
-
+    
+    def update_lr(self, new_lr):
+        for optimizer in [self.q_optimizer_1, self.q_optimizer_2, self.v_optimizer, self.policy_optimizer, self.alpha_optimizer]:
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = new_lr
+        
     def save_model(self, path):
         torch.save(self.q_net_1.state_dict(), path + '_q1')
         torch.save(self.q_net_2.state_dict(), path + '_q2')
         torch.save(self.policy_net.state_dict(), path + '_policy')
-        torch_save(self.value_net.state_dict(), path + '_value')
-        torch_save(self.target_value_net.state_dict(), path + '_target_value')
-        
+        torch.save(self.value_net.state_dict(), path + '_value')
+        torch.save(self.target_value_net.state_dict(), path + '_target_value')
 
-    def load_model(self, path):
+    def load_model(self, path, evaluation=False):
         self.q_net_1.load_state_dict(torch.load(path + '_q1', map_location='cuda:0'))
         self.q_net_2.load_state_dict(torch.load(path + '_q2', map_location='cuda:0'))
         self.policy_net.load_state_dict(torch.load(path + '_policy', map_location='cuda:0'))
         self.value_net.load_state_dict(torch.load(path + '_value', map_location='cuda:0'))
         self.target_value_net.load_state_dict(torch.load(path + '_target_value', map_location='cuda:0'))
 
-        self.q_net_1.eval()
-        self.q_net_2.eval()
-        self.policy_net.eval()
-        self.value_net.eval()
-        self.target_value_net.eval()
+        if evaluation:
+            self.q_net_1.eval()
+            self.q_net_2.eval()
+            self.policy_net.eval()
+            self.value_net.eval()
+            self.target_value_net.eval()
 
 
-def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps, batch_size=64, learning_starts=100, n_updates=1, callback=None, log_path=None, AUTO_ENTROPY=True, DETERMINISTIC=False):
+def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps, batch_size=64, learning_starts=100, n_updates=1, linear_lr_scheduler=None, callback=None, log_path=None, DETERMINISTIC=False):
     if log_path is not None:
         writer = SummaryWriter(log_dir=log_path + "WORKER_" + str(worker_id))
-        writer.add_scalar("Rewards/episode_reward", 0, 0)
+        writer.add_scalar("Rewards/episodeReward", 0, 0)
         writer.add_scalar('Actions/meanTestActions', 0, 0)
         writer.add_scalar('Accuracies/testAccuracies', 0, 0)
+        writer.add_scalar('Accuracies/trainAccuracies', 0, 0)
     else:
         writer = None
+    
+    if isinstance(linear_lr_scheduler, list):
+        learning_rate_changer = lambda x : (linear_lr_scheduler[0] - linear_lr_scheduler[1]) * (1 - x / num_steps) + linear_lr_scheduler[1]
     
     with torch.cuda.device(worker_id % torch.cuda.device_count()):
         sac_trainer.to_cuda()
@@ -390,31 +399,34 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
         n_episode_steps = 0
         best_mean_train_rewards, best_mean_test_rewards = -np.inf, -np.inf
         
-        # env_kwargs['ID'] = worker_id
+        env_kwargs['ID'] = worker_id
         env = env_fn(**env_kwargs)
         obs = env.reset()
         
         for step in range(num_steps):
+            # print(step, "memory:", torch.cuda.memory_stats(0)['active_bytes.all.current'] / (2**20), "MB")
+            
             if callback is not None:
                 callback(locals(), globals())
             
             if step < learning_starts:
-                action = env.action_space.sample()
+                action = torch.Tensor(env.action_space.sample()).cuda()
             else:
                 action = sac_trainer.policy_net.get_action(obs, deterministic=DETERMINISTIC)
                 
-            next_obs, reward, done, _ = env.step(action)
+            next_obs, reward, done, info = env.step(action)
             
-            replay_buffer.push(obs, action, reward, next_obs, done)
+            replay_buffer.push(obs.cpu().detach().numpy(), action.cpu().detach().numpy(), reward.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), done)
             
             episode_reward += reward
             n_episode_steps += 1
             
             if done:
                 obs = env.reset()
-                rewards.append(episode_reward)
+                rewards.append(episode_reward.cpu().detach().numpy())
                 if writer is not None:
-                    writer.add_scalar('Rewards/episode_reward', episode_reward, step)
+                    writer.add_scalar('Rewards/episodeReward', episode_reward, step)
+                    writer.add_scalar('Accuracies/trainAccuracies', info['val_acc'], step)
                 
                 episode_reward = 0
                 n_episode_steps = 0
@@ -423,13 +435,17 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
                 obs = next_obs
                 
             if replay_buffer.get_length() > batch_size and step >= learning_starts:
-                alpha_loss, q_value_loss1, q_value_loss2, value_loss, policy_loss = sac_trainer.update(batch_size, auto_entropy=AUTO_ENTROPY)
+                for i in range(n_updates):
+                    alpha_loss, q_value_loss1, q_value_loss2, value_loss, policy_loss = sac_trainer.update(batch_size)
             else:
                 alpha_loss, q_value_loss1, q_value_loss2, value_loss, policy_loss = 0, 0, 0, 0, 0
             
+            if linear_lr_scheduler is not None:
+                sac_trainer.update_lr(learning_rate_changer(step))
+            
             if writer is not None:
                 writer.add_scalar('Rewards/reward', reward, step)
-                writer.add_scalar('Actions/meanTrainActions', np.mean(action), step)
+                writer.add_scalar('Actions/meanTrainActions', action[0], step)
                 writer.add_scalar("Losses/alphaLoss", alpha_loss, step)
                 writer.add_scalar('Losses/qValueLoss1', q_value_loss1, step)
                 writer.add_scalar('Losses/qValueLoss2', q_value_loss2, step)
@@ -456,6 +472,3 @@ def share_parameters(optimizer):
             state['exp_avg'].share_memory_()
             state['exp_avg_sq'].share_memory_()
             
-
-if __name__ == '__main__':
-    pass
