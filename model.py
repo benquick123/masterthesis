@@ -7,6 +7,8 @@ from torch import Tensor
 
 import numpy as np
 
+from datasets import CustomImageDataset
+
 
 class Autoencoder(nn.Module):
     
@@ -62,24 +64,24 @@ class Autoencoder(nn.Module):
 
 class MNISTModel(nn.Module):
     
-    def __init__(self, input_dim, output_dim):
+    def __init__(self, input_dim, output_dim, layer_sizes=[256, 128]):
         super(MNISTModel, self).__init__()
+        self.layer_sizes = layer_sizes
         self._create_model(input_dim, output_dim)
         self.n_linear_layers = np.sum([isinstance(layer, nn.Linear) for layer in self.layers])        
         
     def _create_model(self, input_dim, output_dim):        
         layers = []
         
-        layers.append(nn.Linear(input_dim, 256))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(0.3))
+        for i in range(len(self.layer_sizes)):
+            if i == 0:
+                layers.append(nn.Linear(input_dim, self.layer_sizes[i]))
+            else:
+                layers.append(nn.Linear(self.layer_sizes[i-1], self.layer_sizes[i]))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(0.3))
         
-        layers.append(nn.Linear(256, 128))
-        layers.append(nn.ReLU())
-        layers.append(nn.Dropout(0.3))
-        
-        layers.append(nn.Linear(128, output_dim))
-        # layers.append(nn.Softmax())
+        layers.append(nn.Linear(self.layer_sizes[-1], output_dim))
         
         self.layers = nn.Sequential(*layers)
         
@@ -98,14 +100,14 @@ class MNISTModel(nn.Module):
                 if layer.bias is not None:
                     zeros_init(layer.bias)
         
-    def fit(self, x, y, optimizer, loss_fn, batch_size=64, epochs=10, verbose=1, gpu_id=0):
-        dataset = TensorDataset(x, y)
-        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    def fit(self, x, y, optimizer, loss_fn, batch_size=64, epochs=10, verbose=1, gpu_id=0, transforms=None):
+        dataset = CustomImageDataset(x, y, transforms)
+        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
         
         for epoch in range(epochs):
             for x_batch, y_batch in data_loader:
-                x_batch = x_batch
-                _, y_batch = y_batch.max(1)
+                x_batch = x_batch.cuda(gpu_id)
+                _, y_batch = y_batch.cuda(gpu_id).max(1)
                 
                 y_pred = self.forward(x_batch)
                 loss = loss_fn(y_pred, y_batch)
@@ -119,6 +121,7 @@ class MNISTModel(nn.Module):
                 
     def predict(self, x):
         self.eval()
+        x = x.cuda()
         with torch.no_grad():
             y = F.log_softmax(self.forward(x))
         self.train()

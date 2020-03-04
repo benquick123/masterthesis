@@ -146,6 +146,16 @@ class ValueNetwork(nn.Module):
         x = self.linears[-1](x)
             
         return x
+    
+    def copy_weights(self, old_model):
+        assert all([self.linears[i].weight.shape == old_model.linears[i].weight.shape and self.linears[i].bias.shape == old_model.linears[i].bias.shape for i in range(len(self.linears))])
+        
+        for i in range(len(self.linears)):
+            self.linears[i].weight.data = old_model.linears[i].weight.data
+            self.linears[i].bias.data = old_model.linears[i].bias.data
+            
+    def freeze(self, freeze_mask):
+        raise NotImplementedError
 
 
 class SoftQNetwork(nn.Module):
@@ -163,6 +173,9 @@ class SoftQNetwork(nn.Module):
 
         self.linears[-1].weight.data.uniform_(-init_w, init_w)
         self.linears[-1].bias.data.uniform_(-init_w, init_w)
+        
+        self.state_dim = state_dim
+        self.action_dim = action_dim
 
     def forward(self, state, action):
         # the dim 0 is number of samples  
@@ -173,6 +186,29 @@ class SoftQNetwork(nn.Module):
             
         x = self.linears[-1](x)
         return x
+    
+    def copy_weights(self, old_model, tile_action_tensors=True, noise_weight=0.0, old_model_weight=1.0):
+        if not tile_action_tensors:
+            copy_start_index = 0
+        else:
+            copy_start_index = 1
+            assert self.state_dim == old_model.state_dim and self.action_dim % old_model.action_dim == 0
+            
+            n_repeats = self.action_dim // old_model.action_dim
+            self.linears[0].weight.data = torch.cat([old_model.linears[0].weight.data[:, :self.state_dim], 
+                                                     self.linears[0].weight.data[:, self.state_dim:] * noise_weight + old_model.linears[0].weight.data[:, self.state_dim:].repeat(1, n_repeats) * old_model_weight], axis=1)
+            self.linears[0].bias.data = torch.cat([old_model.linears[0].bias.data[:self.state_dim], 
+                                                   self.linears[0].bias.data[self.state_dim:] * noise_weight + old_model.linears[0].bias.data[self.state_dim:] * old_model_weight], axis=0)
+        
+        assert all([self.linears[i].weight.shape == old_model.linears[i].weight.shape and self.linears[i].bias.shape == old_model.linears[i].bias.shape for i in range(copy_start_index, len(self.linears))])
+        for i in range(copy_start_index, len(self.linears)):
+            self.linears[i].weight.data = old_model.linears[i].weight.data
+            self.linears[i].bias.data = old_model.linears[i].bias.data
+            
+    def freeze(self, freeze_mask):
+        for i, freeze_bool in enumerate(freeze_mask[::-1]):
+            self.linears[i].weight.requires_grad = not freeze_bool
+            self.linears[i].bias.requires_grad = not freeze_bool
 
 
 class PolicyNetwork(nn.Module):
@@ -249,6 +285,41 @@ class PolicyNetwork(nn.Module):
             
         return action[0]
 
+    def copy_weights(self, old_model, tile_action_tensors=True, noise_weight=0.0, old_model_weight=1.0):        
+        assert all([self.linears[i].weight.shape == old_model.linears[i].weight.shape and self.linears[i].bias.shape == old_model.linears[i].bias.shape for i in range(len(self.linears))])
+        for i in range(len(self.linears)):
+            self.linears[i].weight.data = old_model.linears[i].weight.data
+            self.linears[i].bias.data = old_model.linears[i].bias.data
+            
+        if not tile_action_tensors:
+            assert all([o.weight.shape == n.weight.shape and o.bias.shape == n.bias.shape for o, n in [(old_model.mean_linear, self.mean_linear), (old_model.log_std_linear, self.log_std_linear)]])
+            self.mean_linear.weight.data = old_model.mean_linear.weight.data
+            self.mean_linear.bias.data = old_model.mean_linear.bias.data
+            self.log_std_linear.weight.data = old_model.log_std_linear.weight.data
+            self.log_std_linear.bias.data = old_model.log_std_linear.bias.data
+        else:
+            assert all([all([n_shape % o_shape == 0 for o_shape, n_shape in zip(o.weight.shape, n.weight.shape)]) for o, n in [(old_model.mean_linear, self.mean_linear), (old_model.log_std_linear, self.log_std_linear)]])
+            assert all([all([n_shape % o_shape == 0 for o_shape, n_shape in zip(o.bias.shape, n.bias.shape)]) for o, n in [(old_model.mean_linear, self.mean_linear), (old_model.log_std_linear, self.log_std_linear)]])
+            
+            n_repeats = self.mean_linear.weight.shape[0] // old_model.mean_linear.weight.shape[0]
+            
+            self.mean_linear.weight.data = self.mean_linear.weight.data * noise_weight + old_model.mean_linear.weight.data.repeat(n_repeats, 1) * old_model_weight
+            self.mean_linear.bias.data = self.mean_linear.bias.data * noise_weight + old_model.mean_linear.bias.data.repeat(n_repeats) * old_model_weight
+            
+            self.log_std_linear.weight.data = self.log_std_linear.weight.data * noise_weight + old_model.log_std_linear.weight.data.repeat(n_repeats, 1) * old_model_weight
+            self.log_std_linear.bias.data = self.log_std_linear.bias.data * noise_weight + old_model.log_std_linear.bias.data.repeat(n_repeats) * old_model_weight
+            
+    def freeze(self, freeze_mask):
+        for i, freeze_bool in enumerate(freeze_mask):
+            if i < len(self.linears):
+                self.linears[i].weight.requires_grad = not freeze_bool
+                self.linears[i].bias.requires_grad = not freeze_bool
+            else:
+                self.mean_linear.weight.requires_grad = not freeze_bool
+                self.mean_linear.bias.requires_grad = not freeze_bool
+                self.log_std_linear.weight.requires_grad = not freeze_bool
+                self.log_std_linear.bias.requires_grad = not freeze_bool
+                    
 
 class Alpha(nn.Module):
     def __init__(self):
@@ -258,6 +329,9 @@ class Alpha(nn.Module):
 
     def forward(self):
         return self.log_alpha
+    
+    def copy_weights(self, old_model, noise=0.0):
+        self.log_alpha = old_model.log_alpha
 
 
 class SAC_Trainer():
@@ -309,7 +383,7 @@ class SAC_Trainer():
         self.policy_optimizer.zero_grad()
         self.q_optimizer_1.zero_grad()
         self.q_optimizer_2.zero_grad()
-        self.v_optimizer.zero_grad()        
+        self.v_optimizer.zero_grad()
 
         # get stoh_action, det_action and log_pi
         det_action, stoh_action, log_pi = self.policy_net.evaluate(state)
@@ -362,12 +436,12 @@ class SAC_Trainer():
         torch.save(self.value_net.state_dict(), path + '_value')
         torch.save(self.target_value_net.state_dict(), path + '_target_value')
 
-    def load_model(self, path, evaluation=False):
-        self.q_net_1.load_state_dict(torch.load(path + '_q1', map_location='cuda:0'))
-        self.q_net_2.load_state_dict(torch.load(path + '_q2', map_location='cuda:0'))
-        self.policy_net.load_state_dict(torch.load(path + '_policy', map_location='cuda:0'))
-        self.value_net.load_state_dict(torch.load(path + '_value', map_location='cuda:0'))
-        self.target_value_net.load_state_dict(torch.load(path + '_target_value', map_location='cuda:0'))
+    def load_model(self, path, evaluation=False, gpu_id=0):
+        self.q_net_1.load_state_dict(torch.load(path + '_q1'))
+        self.q_net_2.load_state_dict(torch.load(path + '_q2'))
+        self.policy_net.load_state_dict(torch.load(path + '_policy'))
+        self.value_net.load_state_dict(torch.load(path + '_value'))
+        self.target_value_net.load_state_dict(torch.load(path + '_target_value'))
 
         if evaluation:
             self.q_net_1.eval()
@@ -377,7 +451,7 @@ class SAC_Trainer():
             self.target_value_net.eval()
 
 
-def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps, batch_size=64, learning_starts=100, n_updates=1, linear_lr_scheduler=None, callback=None, log_path=None, DETERMINISTIC=False):
+def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps, batch_size=64, learning_starts=100, n_warmup=100, n_updates=1, linear_lr_scheduler=None, callback=None, log_path=None, DETERMINISTIC=False):
     if log_path is not None:
         writer = SummaryWriter(log_dir=log_path + "WORKER_" + str(worker_id))
         writer.add_scalar("Rewards/episodeReward", 0, 0)
@@ -404,16 +478,16 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
         obs = env.reset()
         
         for step in range(num_steps):
-            # print(step, "memory:", torch.cuda.memory_stats(0)['active_bytes.all.current'] / (2**20), "MB")
-            
             if callback is not None:
                 callback(locals(), globals())
             
-            if step < learning_starts:
+            if step < n_warmup:
                 action = torch.Tensor(env.action_space.sample()).cuda()
             else:
                 action = sac_trainer.policy_net.get_action(obs, deterministic=DETERMINISTIC)
                 
+            # env doesn't adhere to OpenAI spec anymore.
+            # next_obs, new_obs, reward, done, info = env.step(action)
             next_obs, reward, done, info = env.step(action)
             
             replay_buffer.push(obs.cpu().detach().numpy(), action.cpu().detach().numpy(), reward.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), done)
@@ -445,7 +519,7 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
             
             if writer is not None:
                 writer.add_scalar('Rewards/reward', reward, step)
-                writer.add_scalar('Actions/meanTrainActions', action[0], step)
+                writer.add_scalar('Actions/meanTrainActions', ((action + 1) / 2).view((-1, 2))[:, 0].mean(), step)
                 writer.add_scalar("Losses/alphaLoss", alpha_loss, step)
                 writer.add_scalar('Losses/qValueLoss1', q_value_loss1, step)
                 writer.add_scalar('Losses/qValueLoss2', q_value_loss2, step)
