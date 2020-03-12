@@ -1,14 +1,16 @@
 import os
+import pickle
+import re
 import shutil
 import collections
+import importlib
 from multiprocessing.managers import BaseManager
 
 import torch
+import torchtext
 import numpy as np
 from matplotlib import pyplot as plt
-from scipy.ndimage.filters import gaussian_filter
-from scipy.ndimage.interpolation import map_coordinates
-import PIL
+import spacy
 
 from sac_multi import ReplayBuffer
 
@@ -58,7 +60,7 @@ def test(model, env, n_episodes=10, override_action=False, scale=False, render=T
     steps = []
     actions = []
     
-    return_accuracies = np.zeros((n_episodes, env.hyperparams['N_TIMESTEPS'] + 1))
+    return_accuracies = np.zeros((n_episodes, env.hyperparams['max_timesteps'] + 1))
     for i in range(n_episodes):        
         obs = env.reset()
         done = False
@@ -88,7 +90,7 @@ def test(model, env, n_episodes=10, override_action=False, scale=False, render=T
             rewards_sum += reward
             num_steps += 1
             
-            if info['timestep'] < env.hyperparams['N_TIMESTEPS']:
+            if info['timestep'] < env.hyperparams['max_timesteps']:
                 return_accuracies[i, info['timestep']] = info['val_acc']
             
             actions[-1].append(action.tolist())
@@ -167,51 +169,50 @@ def save_self(filepath):
         shutil.copyfile(filename, filepath + filename)
 
 
-# code for elastic transforms from: https://gist.github.com/oeway/2e3b989e0343f0884388ed7ed82eb3b0
-def elastic_transform(image, alpha=1000, sigma=30, spline_order=1, mode='nearest', random_state=np.random):
-    """Elastic deformation of image as described in [Simard2003]_.
-    .. [Simard2003] Simard, Steinkraus and Platt, "Best Practices for
-       Convolutional Neural Networks applied to Visual Document Analysis", in
-       Proc. of the International Conference on Document Analysis and
-       Recognition, 2003.
-       Added correction: accepts only PIL.Image type.
-    """
-    # assert isinstance(image, PIL.Image)
-    
-    image = np.asarray(image)
-    if len(image.shape) < 3:
-        image = np.expand_dims(image, 2)
-    shape = image.shape[:2]
-
-    dx = gaussian_filter((random_state.rand(*shape) * 2 - 1), sigma, mode="constant", cval=0) * alpha
-    dy = gaussian_filter((random_state.rand(*shape) * 2 - 1), sigma, mode="constant", cval=0) * alpha
-
-    x, y = np.meshgrid(np.arange(shape[0]), np.arange(shape[1]), indexing='ij')
-    indices = [np.reshape(x + dx, (-1, 1)), np.reshape(y + dy, (-1, 1))]
-    result = np.empty_like(image)
-    for i in range(image.shape[2]):
-        result[:, :, i] = map_coordinates(image[:, :, i], indices, order=spline_order, mode=mode).reshape(shape)
-    
-    if result.shape[2] == 1:
-        result = result.reshape(result.shape[:2])
-    return PIL.Image.fromarray(result.astype('uint8'))
-
-
-class ElasticTransform(object):
-    """Apply elastic transformation on a numpy.ndarray (H x W x C)
-    """
-
-    def __init__(self, alpha, sigma):
-        self.alpha = alpha
-        self.sigma = sigma
-
-    def __call__(self, image):
-        if isinstance(self.alpha, collections.Sequence):
-            alpha = random_num_generator(self.alpha)
+def text_preprocessing(path, loader_fn, text, target, train=True, emb_dim=100, max_sample_len=1000, load=True):
+    try:
+        if load:
+            X, y = pickle.load(open(os.path.join(path, "tokenized_dataset_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "rb"))
+            return TextDataset(X, y)
         else:
-            alpha = self.alpha
-        if isinstance(self.sigma, collections.Sequence):
-            sigma = random_num_generator(self.sigma)
-        else:
-            sigma = self.sigma
-        return elastic_transform(image, alpha=alpha, sigma=sigma)
+            raise FileNotFoundError # raise exception to re-generate the data.
+    except FileNotFoundError:
+        nlp = spacy.load('en', disable=['parser', 'tagger', 'ner'])
+        
+        def clean(text):
+            text = re.sub(r'[^A-Za-z0-9]+', ' ', text) # remove all non-alphanumeric characters.
+            text = re.sub(r'https?:/\/\S+', ' ', text) # remove links.
+            return text.strip()
+        
+        def tokenizer(s):
+            return [w.text.lower() for w in nlp(clean(s))]
+        
+        module_path = loader_fn.split(".")
+        dataset_loader_fn = getattr(importlib.import_module(".".join(module_path[:-1])), module_path[-1])
+        
+        text_field = torchtext.data.Field(tokenize=tokenizer, fix_length=max_sample_len, batch_first=True)
+        label_field = torchtext.data.LabelField(dtype=torch.float)
+        train_vs_test = "train" if train else "test"
+        dataset = dataset_loader_fn(os.path.join(path, train_vs_test), text_field, label_field)
+        
+        vec = torchtext.vocab.GloVe(name='6B', dim=emb_dim, cache='/opt/workspace/host_storage_hdd/.vector_cache')
+        # text_field.build_vocab(dataset)
+        text_field.build_vocab(dataset, vectors=vec)
+        label_field.build_vocab(dataset)
+        
+        dataset = next(iter(torchtext.data.Iterator.splits((dataset, ), batch_sizes=(len(dataset), ))[0]))
+        
+        X = getattr(dataset, text)
+        y = getattr(dataset, target)
+        
+        pickle.dump((X, y), open(os.path.join(path, "tokenized_dataset_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "wb"))
+
+        return TextDataset(X, y)
+        
+        
+class TextDataset(torch.utils.data.TensorDataset):
+    
+    def __init__(self, X, y, **kwargs):
+        super(TextDataset, self).__init__(X, y, **kwargs)
+        self.data = X
+        self.targets = y

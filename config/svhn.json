@@ -1,0 +1,12 @@
+{
+    "name": "SVHN",
+    "loader_fn": "torchvision.datasets.SVHN",
+    "train_size": 500,
+    "val_size": 1500,
+    "batch_size": 256,
+    "model_init_fn": "model.ConvModel",
+    "model_kwargs": {
+        "n_filters": [16, 32],
+        "fully_connected_layer": 64
+    }
+}

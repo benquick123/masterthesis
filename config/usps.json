@@ -1,0 +1,11 @@
+{
+    "name": "USPS",
+    "loader_fn": "torchvision.datasets.USPS",
+    "train_size": 500,
+    "val_size": 1500,
+    "model_init_fn": "model.DenseModel",
+    "model_kwargs": {
+        "layer_sizes": [256, 512]
+    },
+    "batch_size": 256
+}

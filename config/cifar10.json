@@ -1,0 +1,13 @@
+{
+    "name": "CIFAR-10",
+    "loader_fn": "torchvision.datasets.CIFAR10",
+    "train_size": 500,
+    "val_size": 1500,
+    "batch_size": 256,
+    "pred_batch_size": 8192,
+    "model_init_fn": "model.DenseModel",
+    "model_kwargs": {
+        "n_filters": [16, 16],
+        "fully_connected_layer": 32
+    }
+}

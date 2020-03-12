@@ -1,7 +1,9 @@
 import gym
 import pickle
-from torchvision.datasets import MNIST
-from torchvision import transforms
+import json
+import os
+import importlib
+# from torchvision.datasets import MNIST
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import log_loss, mean_squared_error
 from datetime import datetime
@@ -12,13 +14,14 @@ import torch
 from torch.optim import Adam
 from torch.nn import CrossEntropyLoss, NLLLoss, MSELoss
 from torch import Tensor
+from torchvision import transforms
 
 from hidden_features import train_autoencoder, cluster_images
-from model import MNISTModel
+from model import DenseModel
 
 gym.register("SelfTeaching-v0")
 gym.register("SelfTeaching-v1")
-gym.register("SelfTeaching-v2")
+gym.register("SelfTeachingBase-v0")
 
 def accuracy_score(y_true, y_pred):
     return (y_true == y_pred).sum().double() / y_true.shape[0]
@@ -30,7 +33,7 @@ class SelfTeachingEnvV0(gym.Env):
     reward_range = (-10.0, 10.0)
     spec = gym.spec("SelfTeaching-v0")
     
-    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=500, MIN_TIMESTEPS=0, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, SIGNIFICANT_THRESHOLD=0.001, SIGNIFICANCE_DECAY=0.02, EPOCHS_PER_STEP=1, ID=0, REWARD_SCALE=10, BASE_HIDDEN_LAYER_SIZES=[256, 128], IMAGE_TRANSFORMS=None):
+    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=500, MIN_TIMESTEPS=0, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, significance_threshold=0.001, SIGNIFICANCE_DECAY=0.02, EPOCHS_PER_STEP=1, ID=0, REWARD_SCALE=10, BASE_HIDDEN_LAYER_SIZES=[256, 128], IMAGE_TRANSFORMS=None):
         super(SelfTeachingEnvV0, self).__init__()
         
         print("Initializing environment.")
@@ -43,7 +46,7 @@ class SelfTeachingEnvV0(gym.Env):
         assert 'N_TIMESTEPS' in self.hyperparams and self.hyperparams['N_TIMESTEPS'] > 0
         assert 'BATCH_SIZE' in self.hyperparams
         assert 'PRED_BATCH_SIZE' in self.hyperparams
-        assert 'SIGNIFICANT_THRESHOLD' in self.hyperparams
+        assert 'significance_threshold' in self.hyperparams
         assert 'SIGNIFICANCE_DECAY' in self.hyperparams and 0.0 <= self.hyperparams['SIGNIFICANCE_DECAY'] <= 1.0
         assert 'MIN_TIMESTEPS' in self.hyperparams
         assert 'EPOCHS_PER_STEP' in self.hyperparams
@@ -130,7 +133,7 @@ class SelfTeachingEnvV0(gym.Env):
     def _initialize_model(self):
         if self.model is None:
             print("Initializing model.")
-            self.model = MNISTModel(self.X_train.shape[1], self.y_train.shape[1], layer_sizes=self.hyperparams['BASE_HIDDEN_LAYER_SIZES']).cuda(self.hyperparams['GPU_ID'])
+            self.model = DenseModel(self.X_train.shape[1], self.y_train.shape[1], layer_sizes=self.hyperparams['BASE_HIDDEN_LAYER_SIZES']).cuda(self.hyperparams['GPU_ID'])
             self.model.reset()
             self.model_optimizer = Adam(self.model.parameters(), lr=0.001)
             self.model_loss = CrossEntropyLoss()
@@ -157,7 +160,7 @@ class SelfTeachingEnvV0(gym.Env):
         if self.timestep < self.hyperparams['MIN_TIMESTEPS']:
             return True
         else:
-            return self.reward_moving_average >= self.hyperparams['SIGNIFICANT_THRESHOLD']
+            return self.reward_moving_average >= self.hyperparams['significance_threshold']
             
     def step(self, action):
         # rescale action to [0, 1] range.
@@ -225,7 +228,7 @@ class SelfTeachingEnvV0(gym.Env):
         self.last_reward = 0
         # self.last_mse_loss = self.mse_loss(self.last_y_val_pred.exp(), self.y_val)
         self.len_selected_samples = 0
-        self.reward_moving_average = self.hyperparams['SIGNIFICANT_THRESHOLD']
+        self.reward_moving_average = self.hyperparams['significance_threshold']
         
         self.last_val_accuracy = accuracy_score(torch.argmax(self.y_val, axis=1), torch.argmax(self.last_y_val_pred, axis=1))
         self.last_train_accuracy = accuracy_score(torch.argmax(self.y_train, axis=1), torch.argmax(self.last_y_label_pred, axis=1))
@@ -259,7 +262,7 @@ class SelfTeachingEnvV1(gym.Env):
     reward_range = (-10.0, 10.0)
     spec = gym.spec("SelfTeaching-v1")
     
-    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=500, MIN_TIMESTEPS=0, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, SIGNIFICANT_THRESHOLD=0.001, SIGNIFICANCE_DECAY=0.02, EPOCHS_PER_STEP=1, ID=0, REWARD_SCALE=10):
+    def __init__(self, N_CLUSTERS=50, Y_ESTIMATED_LR=0.3, N_TIMESTEPS=500, MIN_TIMESTEPS=0, BATCH_SIZE=256, PRED_BATCH_SIZE=8192, significance_threshold=0.001, SIGNIFICANCE_DECAY=0.02, EPOCHS_PER_STEP=1, ID=0, REWARD_SCALE=10):
         super(SelfTeachingEnvV1, self).__init__()
         
         print("Initializing environment.")
@@ -272,7 +275,7 @@ class SelfTeachingEnvV1(gym.Env):
         assert 'N_TIMESTEPS' in self.hyperparams and self.hyperparams['N_TIMESTEPS'] > 0
         assert 'BATCH_SIZE' in self.hyperparams
         assert 'PRED_BATCH_SIZE' in self.hyperparams
-        assert 'SIGNIFICANT_THRESHOLD' in self.hyperparams
+        assert 'significance_threshold' in self.hyperparams
         assert 'SIGNIFICANCE_DECAY' in self.hyperparams and 0.0 <= self.hyperparams['SIGNIFICANCE_DECAY'] <= 1.0
         assert 'MIN_TIMESTEPS' in self.hyperparams
         assert 'EPOCHS_PER_STEP' in self.hyperparams
@@ -358,7 +361,7 @@ class SelfTeachingEnvV1(gym.Env):
     def _initialize_model(self):
         if self.model is None:
             print("Initializing model.")
-            self.model = MNISTModel(self.X_train.shape[1], self.y_train.shape[1]).cuda(self.hyperparams['GPU_ID'])
+            self.model = DenseModel(self.X_train.shape[1], self.y_train.shape[1]).cuda(self.hyperparams['GPU_ID'])
             self.model.reset()
             self.model_optimizer = Adam(self.model.parameters(), lr=0.001)
             self.model_loss = CrossEntropyLoss()
@@ -426,7 +429,7 @@ class SelfTeachingEnvV1(gym.Env):
         if self.timestep < self.hyperparams['MIN_TIMESTEPS']:
             return True
         else:
-            return self.reward_moving_average >= self.hyperparams['SIGNIFICANT_THRESHOLD']
+            return self.reward_moving_average >= self.hyperparams['significance_threshold']
             
     def step(self, action):
         # rescale action from [-1, 1] to [0, 1] range.
@@ -511,7 +514,7 @@ class SelfTeachingEnvV1(gym.Env):
         self.last_reward = 0
         # self.last_mse_loss = self.mse_loss(self.last_y_val_pred.exp(), self.y_val)
         self.len_selected_samples = 0
-        self.reward_moving_average = self.hyperparams['SIGNIFICANT_THRESHOLD']
+        self.reward_moving_average = self.hyperparams['significance_threshold']
         
         self.last_group = torch.randint(0, self.hyperparams['N_CLUSTERS'], (1, ))[0].cuda(self.hyperparams['GPU_ID'])
         
@@ -561,3 +564,228 @@ class SelfTeachingEnvV1(gym.Env):
         
         return render_string
 
+
+class SelfTeachingBaseEnv(gym.Env):
+    metadata = {'render.modes': ["ansi"]}
+    reward_range = (-10.0, 10.0)
+    spec = gym.spec("SelfTeachingBase-v0")
+    
+    def __init__(self, 
+                 dataset, 
+                 config_path="./config", 
+                 default_hyperparams={"y_estimated_lr": 0.3,
+                                      "max_timesteps": 500,
+                                      "min_timesteps": 0,
+                                      "batch_size": 64,
+                                      "pred_batch_size": -1,
+                                      "significance_threshold": 0.001,
+                                      "significance_decay": 0.0,
+                                      "epochs_per_step": 1,
+                                      "worker_id": 0,
+                                      "reward_scale": 1.0,
+                                      "model_lr": 0.001,
+                                      "train_size": 500,
+                                      "val_size": 1500,
+                                      "loader_kwargs": {
+                                          "root": "/opt/workspace/host_storage_hdd",
+                                          "download": True
+                                          }
+                                      }, 
+                 override_hyperparams={}):
+        
+        super(SelfTeachingBaseEnv, self).__init__()
+        
+        json_config = json.load(open(os.path.join(config_path, dataset.lower() + ".json"), "r"))
+        # take care for correct hyperparameters initialization
+        self.hyperparams = dict(default_hyperparams)
+        self.hyperparams.update(json_config)
+        self.hyperparams.update(override_hyperparams)
+        
+        self.hyperparams['gpu_id'] = self.hyperparams['worker_id'] % torch.cuda.device_count()
+        print("Initializing environment:", self.hyperparams['worker_id'])
+        
+        self.model = None
+        
+        self._load_data()
+        
+        self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2, ))
+        self.observation_space = gym.spaces.Box(low=0.0, high=10.0, shape=((self.hyperparams['n_classes'] ** 2 + 5, )))
+    
+    def _load_data(self):
+        print("Loading data:", self.hyperparams['name'])
+        module_path = self.hyperparams['loader_fn'].split(".")
+        dataset_loader_fn = getattr(importlib.import_module(".".join(module_path[:-1])), module_path[-1])
+        
+        assert "train" not in self.hyperparams['loader_kwargs']
+        # implementation assumes a interface otherwise found in torchvision.datasets.
+        train = dataset_loader_fn(train=True, **self.hyperparams['loader_kwargs'])
+        test = dataset_loader_fn(train=False, **self.hyperparams['loader_kwargs'])
+        
+        # ensure train and test are numpy arrays by first converting them to Tensor and then back to np.array
+        self.X_train = torch.tensor(train.data).numpy()
+        self.y_train = torch.tensor(train.targets).numpy()
+        self.X_test = torch.tensor(test.data).numpy()
+        self.y_test = torch.tensor(test.targets).numpy()
+        
+        if isinstance(self.hyperparams['train_size'], float):
+            self.hyperparams['train_size'] = int(len(X_train) * self.hyperparams['train_size'])
+        if isinstance(self.hyperparams['val_size'], float):
+            self.hyperparams['val_size'] = int(len(X_train) * self.hyperparams['val_size'])
+        
+        self.X_train = self.X_train.astype('float32')
+        self.X_test = self.X_test.astype('float32')
+        if np.max(self.X_train) > 1.0:
+            self.X_train = self.X_train / 255
+            self.X_test = self.X_test / 255
+            
+        if self.hyperparams['model_init_fn'] == 'model.DenseModel':
+            self.X_train = self.X_train.reshape(self.X_train.shape[:1] + (np.prod(self.X_train.shape[1:]), ))
+            self.X_test = self.X_test.reshape(self.X_test.shape[:1] + (np.prod(self.X_test.shape[1:]), ))
+        
+        self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(self.X_train, self.y_train, test_size=self.hyperparams['val_size'], random_state=0)
+        self.X_train, self.X_unlabel, self.y_train, _ = train_test_split(self.X_train, self.y_train, train_size=self.hyperparams['train_size'], random_state=0)
+        
+        self.X_train = torch.tensor(self.X_train).cuda(self.hyperparams['gpu_id'])
+        self.y_train = torch.tensor(self.y_train, dtype=torch.long).cuda(self.hyperparams['gpu_id'])
+        self.X_val = torch.tensor(self.X_val).cuda(self.hyperparams['gpu_id'])
+        self.y_val = torch.tensor(self.y_val, dtype=torch.long).cuda(self.hyperparams['gpu_id'])
+        self.X_unlabel = torch.tensor(self.X_unlabel).cuda(self.hyperparams['gpu_id'])
+        
+        if self.hyperparams['model_init_fn'] == 'model.ConvModel':
+            # swap axes form NHWC to NCHW
+            self.X_train = self.X_train.permute(0, 3, 1, 2)
+            self.X_unlabel = self.X_unlabel.permute(0, 3, 1, 2)
+            self.X_val = self.X_val.permute(0, 3, 1, 2)
+            
+        # self.X_test = torch.tensor(self.X_val).cuda(self.hyperparams['gpu_id'])
+        # self.y_test = torch.tensor(self.y_val).cuda(self.hyperparams['gpu_id'])
+        
+        # save number of classes for later use:
+        self.hyperparams['n_classes'] = len(self.y_train.unique())
+    
+    def _initialize_model(self):
+        if self.model is None:
+            print("Initializing model.")
+            model_path = self.hyperparams['model_init_fn'].split(".")
+            model_init_fn = getattr(importlib.import_module(".".join(model_path[:-1])), model_path[-1])
+            
+            self.model = model_init_fn(self.X_train.shape[1:], self.hyperparams['n_classes'], **self.hyperparams['model_kwargs']).cuda(self.hyperparams['gpu_id'])
+            self.model_optimizer = Adam(self.model.parameters(), lr=self.hyperparams['model_lr'])
+            self.model_loss = CrossEntropyLoss()
+            self.nll_loss = NLLLoss()
+            self.mse_loss = MSELoss()
+        
+        self.model.reset()
+            
+    def _get_state(self):
+        state = torch.zeros(self.observation_space.shape)
+        last_y_val_pred_exp = self.last_y_val_pred.exp()
+        
+        for i in range(self.hyperparams['n_classes']):
+            mask = i == self.y_val
+            state[i * self.hyperparams['n_classes']:(i+1) * self.hyperparams['n_classes']] = last_y_val_pred_exp[mask].mean(axis=0)
+            
+        state = state.view(-1)
+        state[-5:] = torch.Tensor([self.len_selected_samples / self.X_unlabel.shape[0], self.last_val_accuracy, self.last_train_accuracy, self.last_val_loss, self.last_train_loss])
+        return state
+    
+    def _significant(self, reward):
+        self.reward_moving_average = (1 - self.hyperparams['significance_decay']) * self.reward_moving_average + self.hyperparams['significance_decay'] * reward
+        if self.timestep < self.hyperparams['min_timesteps']:
+            return True
+        else:
+            return self.reward_moving_average >= self.hyperparams['significance_threshold']
+            
+    def step(self, action):
+        # rescale action to [0, 1] range.
+        action = ((action + 1) / 2).view(-1)
+        range_scale = 0.5 - torch.abs(0.5 - action[0])
+        action[1] = action[1] * range_scale
+        self.last_action = [action[0] - action[1], action[0] + action[1]]
+        
+        tau1, tau2 = self.last_action[0], self.last_action[1]
+
+        assert tau1 <= tau2
+        
+        y_unlabel_estimates_max, y_unlabel_estimates_argmax = torch.max(self.y_unlabel_estimates, axis=1)
+        y_unlabel_estimates_indices = (y_unlabel_estimates_max > tau1) & (y_unlabel_estimates_max < tau2)
+        self.len_selected_samples = y_unlabel_estimates_indices.sum().double()
+    
+        # y_pred_binary = torch.zeros(self.last_y_unlabel_pred.shape, dtype=torch.long).scatter_(1, y_unlabel_estimates_argmax.view((-1, 1)), 1.0).cuda(self.hyperparams['gpu_id'])
+        
+        self.model.fit(torch.cat((self.X_train, self.X_unlabel[y_unlabel_estimates_indices]), axis=0),
+                        torch.cat((self.y_train, y_unlabel_estimates_argmax[y_unlabel_estimates_indices]), axis=0),
+                        optimizer=self.model_optimizer,
+                        loss_fn=self.model_loss,
+                        epochs=self.hyperparams['epochs_per_step'], 
+                        batch_size=self.hyperparams['batch_size'], 
+                        verbose=0,
+                        gpu_id=self.hyperparams['gpu_id'])
+        
+        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['pred_batch_size']).detach()
+        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['pred_batch_size']).detach()
+        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['pred_batch_size']).detach()
+        
+        self.y_unlabel_estimates = (1 - self.hyperparams['y_estimated_lr']) * self.y_unlabel_estimates + self.hyperparams['y_estimated_lr'] * self.last_y_unlabel_pred.exp()
+        self.y_unlabel_estimates /= self.y_unlabel_estimates.sum(axis=1).view((-1, 1))
+
+        new_accuracy = accuracy_score(self.y_val, torch.argmax(self.last_y_val_pred, axis=1))
+        
+        self.last_reward = new_accuracy - self.last_val_accuracy    # -(new_mse_loss - self.last_mse_loss)    # new_accuracy - self.last_val_accuracy
+        reward_scale_factor = self.hyperparams['reward_scale']
+        self.last_reward *= reward_scale_factor
+        
+        self.last_val_accuracy = new_accuracy
+        self.last_train_accuracy = accuracy_score(self.y_train, torch.argmax(self.last_y_label_pred, axis=1))
+        self.last_val_loss = self.nll_loss(self.last_y_val_pred, self.y_val)
+        self.last_train_loss = self.nll_loss(self.last_y_label_pred, self.y_train)
+        
+        self.last_state = self._get_state()
+   
+        self.timestep += 1
+        terminal = True if self.timestep >= self.hyperparams['max_timesteps'] or not self._significant(self.last_reward) else False
+            
+        return self.last_state, self.last_reward, terminal, { 'val_acc': self.last_val_accuracy, 'timestep': self.timestep }
+        
+    def reset(self):
+        self._initialize_model()
+        
+        self.last_action = torch.zeros(self.action_space.shape[0])
+        
+        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['pred_batch_size']).detach()
+        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['pred_batch_size']).detach()
+        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['pred_batch_size']).detach()
+        
+        self.y_unlabel_estimates = torch.ones((self.X_unlabel.shape[0], self.hyperparams['n_classes']), device=torch.device('cuda', self.hyperparams['gpu_id'])) * (1 / self.hyperparams['n_classes'])
+        self.timestep = 0
+        self.last_reward = 0
+        # self.last_mse_loss = self.mse_loss(self.last_y_val_pred.exp(), self.y_val)
+        self.len_selected_samples = 0
+        self.reward_moving_average = self.hyperparams['significance_threshold']
+        
+        self.last_val_accuracy = accuracy_score(self.y_val, torch.argmax(self.last_y_val_pred, axis=1))
+        self.last_train_accuracy = accuracy_score(self.y_train, torch.argmax(self.last_y_label_pred, axis=1))
+        self.last_val_loss = self.nll_loss(self.last_y_val_pred, self.y_val)
+        self.last_train_loss = self.nll_loss(self.last_y_label_pred, self.y_train)
+        
+        self.last_state = self._get_state()
+
+        return self.last_state
+    
+    def render(self, mode="ansi"):
+        render_string = ""
+        
+        render_string += "TIMESTEP: %d - REWARD: %.3f" % (self.timestep, self.last_reward)
+        render_string += "\nLOSS: %.3f - TRAIN_ACC: %.3f - VAL_ACC: %.3f" % (self.last_train_loss, self.last_train_accuracy, self.last_val_accuracy)
+        render_string += "\nSignificance level: %.3f" % (self.reward_moving_average)
+        render_string += "\nNum. selected samples: %d" % (self.len_selected_samples)
+        
+        render_string += "\n\nThresholds:\n" + str(['%.6f' % (element) for element in self.last_action]).replace("'", "")
+        render_string += "\nState:\n" + str(self.last_state[:-5].view((self.hyperparams['n_classes'], self.hyperparams['n_classes'])).detach().numpy())[:-1]
+        render_string += "\n " + str(['%.2f' % (element) for element in self.last_state[-5:]]).replace("'", "").replace(",", "")
+        
+        print(render_string, file=open("/opt/workspace/host_storage_hdd/tmp_" + str(self.hyperparams['worker_id']) + ".log", "w"))
+        
+        return render_string
+
+    

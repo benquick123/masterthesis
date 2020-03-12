@@ -1,0 +1,17 @@
+{
+    "name": "IMDB",
+    "loader_fn": "utils.text_preprocessing",
+    "loader_kwargs": {
+        "path": "/opt/workspace/host_storage_hdd/.data/imdb/aclImdb",
+        "loader_fn": "torchtext.datasets.IMDB",
+        "emb_dim": 100,
+        "max_sample_len": 1000,
+        "text": "text",
+        "target": "label"
+    },
+    "model_init_fn": "model.TextModel",
+    "model_kwargs":  {
+        "emb_dim": 100
+
+    }
+}

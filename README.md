@@ -119,3 +119,12 @@ Figure 2 shows the averaged thresholds over 5 testing iterations chosen by a tra
 ## Discussion
 
 ab
+
+# TODO
+
+- thorough analysis: confusion matrix, results with different number of labeled samples: 100, 500, 1000 and all.
+- try out 2 versions of each network.
+- how to speed up prediction cycle?
+
+- curriculum learning: first present only small part of labeled samples and then gradually bring in more.
+- 

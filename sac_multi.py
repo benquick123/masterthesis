@@ -473,7 +473,7 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
         n_episode_steps = 0
         best_mean_train_rewards, best_mean_test_rewards = -np.inf, -np.inf
         
-        env_kwargs['ID'] = worker_id
+        env_kwargs['override_hyperparams']['worker_id'] = worker_id
         env = env_fn(**env_kwargs)
         obs = env.reset()
         
