@@ -1,8 +1,10 @@
 import math
 import random
 import traceback
+import os
 
 import numpy as np
+import pickle
 
 import torch
 torch.multiprocessing.set_start_method('forkserver', force=True)
@@ -119,6 +121,12 @@ class ReplayBuffer:
 
     def get_length(self):
         return len(self.buffer)
+    
+    def save_buffer(self, filepath):
+        pickle.dump((self.buffer, self.position), open(os.path.join(filepath, "replay_buffer.pkl"), "wb"))
+        
+    def load_buffer(self, filepath):
+        self.buffer, self.position = pickle.load(open(os.path.join(filepath, "replay_buffer.pkl"), "rb"))
 
 
 class ValueNetwork(nn.Module):

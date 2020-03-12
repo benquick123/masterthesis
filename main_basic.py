@@ -111,7 +111,7 @@ if __name__ == '__main__':
     for process in processes:
         process.join()
     
-    
+    replay_buffer.save_buffer(save_path)
         
     test_pipeline(SelfTeachingBaseEnv(**env_kwargs), sac_trainer, save_path)
 
