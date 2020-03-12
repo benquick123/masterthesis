@@ -657,8 +657,8 @@ class SelfTeachingBaseEnv(gym.Env):
             self.X_unlabel = self.X_unlabel.permute(0, 3, 1, 2)
             self.X_val = self.X_val.permute(0, 3, 1, 2)
             
-        # self.X_test = torch.tensor(self.X_val).cuda(self.hyperparams['gpu_id'])
-        # self.y_test = torch.tensor(self.y_val).cuda(self.hyperparams['gpu_id'])
+        self.X_test = torch.tensor(self.X_val).cuda(self.hyperparams['gpu_id'])
+        self.y_test = torch.tensor(self.y_val).cuda(self.hyperparams['gpu_id'])
         
         # save number of classes for later use:
         self.hyperparams['n_classes'] = len(self.y_train.unique())

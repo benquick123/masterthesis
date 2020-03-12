@@ -6,11 +6,13 @@ import collections
 import importlib
 from multiprocessing.managers import BaseManager
 
+import seaborn
 import torch
 import torchtext
 import numpy as np
 from matplotlib import pyplot as plt
 import spacy
+from sklearn.metrics import confusion_matrix
 
 from sac_multi import ReplayBuffer
 
@@ -133,6 +135,16 @@ def plot_actions(mean_actions, std_actions, label, color, filepath=None):
         plt.savefig(filepath + label.replace(" ", "_") + "_actions" + ".svg")
 
 
+def plot_confusion_matrix(matrix, filepath=None):
+    plt.figure(figsize=(6, 6))
+    seaborn.heatmap(matrix)
+    plt.ylabel("True")
+    plt.xlabel("Predicted")
+
+    if filepath is not None:
+        plt.save(os.path.join(filepath, "confusion_matrix.svg"))
+
+
 def test_pipeline(env, trainer, model_path=None, save=True):
     action_dim = env.action_space.shape[0]
     state_dim  = env.observation_space.shape[0]
@@ -156,8 +168,15 @@ def test_pipeline(env, trainer, model_path=None, save=True):
     std_accs.append(std_acc)
     
     if save:
-        filename = "test" if model_path is None else model_path.split("/")[-2]
-        plot(mean_accs, std_accs, labels=["manually set thresholds", "label only baseline", "RL trained - test"], y_lim=(0.5, 1.0), filename=filename, filepath='/opt/workspace/host_storage_hdd/results/')
+        plot(mean_accs, std_accs, labels=["manually set thresholds", "label only baseline", "RL trained - test"], y_lim=(0.5, 1.0), filename="test_curves", filepath=model_path)
+        
+    model = env.model
+    y_pred = model.predict(env.X_test, batch_size=env.hyperparams['pred_batch_size'])
+    cm = confusion_matrix(env.y_test, y_pred)   
+    
+    if save:
+        filepath = "." if model_path is None else model_path
+        plot_confusion_matrix(cm, filepath)
 
 
 def save_self(filepath):

@@ -5,6 +5,7 @@ gpu_num = '1,2,3'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
 
+import argparse
 from datetime import datetime
 import numpy as np
 np.set_printoptions(formatter={'float': lambda x: "{0:0.2f}".format(x)})
@@ -22,6 +23,10 @@ from utils import save_self, learn_callback, test_pipeline
 
 if __name__ == '__main__':
     os.system('clear')
+    
+    parser = argparse.ArgumentParser(description="Runner for one dataset pipeline.")
+    parser.add_argument("--dataset", type=str, action="store", required=True, help="Dataset to use.")
+    args = parser.parse_args()
 
     """
         N_CLUSTERS = 1
@@ -31,7 +36,7 @@ if __name__ == '__main__':
                                             transforms.RandomSizedCrop(28, scale=(0.8, 1.2)),
                                             transforms.ToTensor()])
     """
-    env_kwargs = {"dataset": "imdb", 
+    env_kwargs = {"dataset": args.dataset, 
                   "override_hyperparams": {
                       "reward_scale": 10.0
                       }
@@ -60,8 +65,8 @@ if __name__ == '__main__':
 
     sac_trainer = SAC_Trainer(replay_buffer, state_dim, action_dim, hidden_layer_sizes=rl_hidden_layer_sizes, q_lr=initial_lr, pi_lr=initial_lr, alpha_lr=initial_lr, v_lr=initial_lr)
     
-    test_pipeline(env, sac_trainer, '/opt/workspace/host_storage_hdd/results/2020-03-05_10-28-29.855557_fashion_mnist/')
-    exit()
+    # test_pipeline(env, sac_trainer, '/opt/workspace/host_storage_hdd/results/2020-03-05_10-28-29.855557_fashion_mnist/')
+    # exit()
     del env
         
     folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-")
@@ -105,6 +110,8 @@ if __name__ == '__main__':
         process.start()
     for process in processes:
         process.join()
+    
+    
         
     test_pipeline(SelfTeachingBaseEnv(**env_kwargs), sac_trainer, save_path)
 

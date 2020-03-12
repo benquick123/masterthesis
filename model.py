@@ -86,24 +86,23 @@ class CustomModel(nn.Module):
                 print("EPOCH: %3d/%3d - loss: %.3f" % (epoch, epochs, loss.cpu().detach().numpy()))
                 
     def predict(self, x, batch_size=64, gpu_id=0):
-        if batch_size == -1:
-            batch_size = len(x)
-            
         self.eval()
-        dataset = TensorDataset(x)
-        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
-        
-        y = None
-        
-        with torch.no_grad():
-            for [x_batch] in data_loader:
-                y_pred = F.log_softmax(self.forward(x_batch))
-                if y is None:
-                    y = torch.tensor(y_pred)
-                else:
-                    y = torch.cat([y, y_pred], axis=0)
-        # with torch.no_grad():
-        #     y = F.softmax(self.forward(x))
+        if batch_size == -1:
+            with torch.no_grad():
+                y = F.softmax(self.forward(x))
+        else:
+            dataset = TensorDataset(x)
+            data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            
+            y = None
+            
+            with torch.no_grad():
+                for [x_batch] in data_loader:
+                    y_pred = F.log_softmax(self.forward(x_batch))
+                    if y is None:
+                        y = torch.tensor(y_pred)
+                    else:
+                        y = torch.cat([y, y_pred], axis=0)
         self.train()
         return y.detach()
     

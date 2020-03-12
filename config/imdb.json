@@ -12,6 +12,5 @@
     "model_init_fn": "model.TextModel",
     "model_kwargs":  {
         "emb_dim": 100
-
     }
 }
