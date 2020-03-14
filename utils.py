@@ -20,7 +20,7 @@ best_train_mean_episode_rewards = -np.inf
 best_test_mean_episode_accuracy = -np.inf
 
 
-def learn_callback(_locals, _globals):
+def learn_callback(_locals, _globals, reward_lookback=20, test_interval=100, test_episodes=5):
     global best_train_mean_episode_rewards
     global best_test_mean_episode_accuracy
     
@@ -29,10 +29,6 @@ def learn_callback(_locals, _globals):
         if _locals['step'] < _locals['learning_starts']:
             return True
  
-        reward_lookback = 20
-        test_interval = 5
-        test_episodes = 5
-        
         mean_episode_rewards = np.mean(_locals['rewards'][-reward_lookback:])
             
         if mean_episode_rewards > best_train_mean_episode_rewards:
@@ -182,16 +178,16 @@ def test_pipeline(env, trainer, model_path=None, save=True):
 def save_self(filepath):
     filepath = filepath + 'code/'
     os.makedirs(filepath, exist_ok=True)
-    filenames = ['main_basic.py', 'main_transfer.py', 'model.py', 'env.py', 'sac_multi.py', 'datasets.py']
+    filenames = ['main_basic.py', 'main_transfer.py', 'model.py', 'env.py', 'sac_multi.py', 'utils.py']
     
     for filename in filenames:
         shutil.copyfile(filename, filepath + filename)
 
 
-def text_preprocessing(path, loader_fn, text, target, train=True, emb_dim=100, max_sample_len=1000, load=True):
+def imdb_preprocessing(path, loader_fn, text, target, train=True, emb_dim=100, max_sample_len=1000, load=True):
     try:
         if load:
-            X, y = pickle.load(open(os.path.join(path, "tokenized_dataset_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "rb"))
+            X, y = pickle.load(open(os.path.join(path, "tokenized_dataset_" + ("train" if train else "test") + "_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "rb"))
             return TextDataset(X, y)
         else:
             raise FileNotFoundError # raise exception to re-generate the data.
@@ -211,23 +207,75 @@ def text_preprocessing(path, loader_fn, text, target, train=True, emb_dim=100, m
         
         text_field = torchtext.data.Field(tokenize=tokenizer, fix_length=max_sample_len, batch_first=True)
         label_field = torchtext.data.LabelField(dtype=torch.float)
-        train_vs_test = "train" if train else "test"
-        dataset = dataset_loader_fn(os.path.join(path, train_vs_test), text_field, label_field)
-        
+        train_dataset = dataset_loader_fn(os.path.join(path, "train"), text_field, label_field)
+        test_dataset = None if train else dataset_loader_fn(os.path.join(path, "test"), text_field, label_field)
+
         vec = torchtext.vocab.GloVe(name='6B', dim=emb_dim, cache='/opt/workspace/host_storage_hdd/.vector_cache')
-        # text_field.build_vocab(dataset)
-        text_field.build_vocab(dataset, vectors=vec)
-        label_field.build_vocab(dataset)
+        text_field.build_vocab(train_dataset, vectors=vec, unk_init=torch.Tensor.normal_)
+        label_field.build_vocab(train_dataset)
         
-        dataset = next(iter(torchtext.data.Iterator.splits((dataset, ), batch_sizes=(len(dataset), ))[0]))
+        dataset = train_dataset if train else test_dataset
+        dataset = next(iter(torchtext.data.Iterator.splits((dataset, ), batch_sizes=(len(dataset), ), shuffle=False)[0]))
         
         X = getattr(dataset, text)
         y = getattr(dataset, target)
-        
-        pickle.dump((X, y), open(os.path.join(path, "tokenized_dataset_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "wb"))
+
+        pickle.dump((X, y), open(os.path.join(path, "tokenized_dataset_" + ("train" if train else "test") + "_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "wb"))
+        if train:
+            pickle.dump(text_field.vocab.vectors, open(os.path.join(path, "embed_vectors_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "wb"))
 
         return TextDataset(X, y)
         
+        
+def text_dataset_loader(path, dataset_key, train=True, emb_dim=100, max_sample_len=1000, load=True):
+    # this function presumes a very specific loading structure; see below.
+    try:
+        if load:
+            X, y = pickle.load(open(os.path.join(path, "tokenized_dataset_" + ("train" if train else "test") + "_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "rb"))
+            return TextDataset(X, y)
+        else:
+            raise FileNotFoundError # raise exception to re-generate the data.
+    except FileNotFoundError:
+        from torchtext.utils import download_from_url, extract_archive
+        from torchtext.datasets.text_classification import URLS, _csv_iterator, build_vocab_from_iterator
+        dataset_tar = download_from_url(URLS[dataset_key], root="/".join(path.split("/")[:-1]))
+        extract_archive(dataset_tar)
+        
+        train_path = os.path.join(path, "train.csv")
+        train_dataset = np.array([(sample[0], list(sample[1])) for sample in _csv_iterator(train_path, ngrams=1, yield_cls=1)])
+        
+        test_path = None if train else os.path.join(path, "test.csv")
+        test_dataset = None if train else np.array([(sample[0], list(sample[1])) for sample in _csv_iterator(train_path, ngrams=1, yield_cls=1)])
+
+        vec = torchtext.vocab.GloVe(name='6B', dim=emb_dim, cache='/opt/workspace/host_storage_hdd/.vector_cache')
+        vocab = build_vocab_from_iterator(train_dataset[:, 1])
+        vocab.set_vectors(vec.stoi, vec.vectors, emb_dim, unk_init=torch.Tensor.normal_)
+        
+        X = []
+        y = []
+        dataset = train_dataset if train else test_dataset
+        for target, data in dataset:
+            sample_x = []
+            for token in data:
+                sample_x.append(vocab.stoi[token])
+                
+            if len(sample_x) < max_sample_len:
+                sample_x += [vocab.stoi["<pad>"]] * (max_sample_len - len(sample_x))
+            else:
+                sample_x = sample_x[:max_sample_len]
+                
+            X.append(sample_x)
+            y.append(target)
+
+        X = torch.tensor(X)
+        y = torch.tensor(y)
+        
+        pickle.dump((X, y), open(os.path.join(path, "tokenized_dataset_" + ("train" if train else "test") + "_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "wb"))
+        if train:
+            pickle.dump(vocab.vectors, open(os.path.join(path, "embed_vectors_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "wb"))
+        
+        return TextDataset(X, y)
+
         
 class TextDataset(torch.utils.data.TensorDataset):
     

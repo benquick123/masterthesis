@@ -1,0 +1,17 @@
+{
+    "name": "AG_News",
+    "loader_fn": "utils.text_dataset_loader",
+    "loader_kwargs": {
+        "path": "/opt/workspace/host_storage_hdd/.data/ag_news_csv",
+        "dataset_key": "AG_NEWS",
+        "emb_dim": 100,
+        "max_sample_len": 200
+    },
+    "model_init_fn": "model.TextModel",
+    "model_kwargs":  {
+        "emb_dim": 100,
+        "embedding_path": "/opt/workspace/host_storage_hdd/.data/ag_news_csv/embed_vectors_200_100.pkl"
+    },
+    "pred_batch_size": 8192,
+    "batch_size": 256
+}

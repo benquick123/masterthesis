@@ -459,7 +459,7 @@ class SAC_Trainer():
             self.target_value_net.eval()
 
 
-def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps, batch_size=64, learning_starts=100, n_warmup=100, n_updates=1, linear_lr_scheduler=None, callback=None, log_path=None, DETERMINISTIC=False):
+def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps, batch_size=64, learning_starts=100, n_warmup=100, n_updates=1, linear_lr_scheduler=None, callback=None, callback_kwargs={}, log_path=None, DETERMINISTIC=False):
     if log_path is not None:
         writer = SummaryWriter(log_dir=log_path + "WORKER_" + str(worker_id))
         writer.add_scalar("Rewards/episodeReward", 0, 0)
@@ -487,7 +487,7 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
         
         for step in range(num_steps):
             if callback is not None:
-                callback(locals(), globals())
+                callback(locals(), globals(), **callback_kwargs)
             
             if step < n_warmup:
                 action = torch.Tensor(env.action_space.sample()).cuda()

@@ -1,9 +1,14 @@
+import pickle
+
+import torchtext
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import TensorDataset, DataLoader
 from torch.nn.init import kaiming_uniform_ as kaiming_uniform_init, zeros_ as zeros_init, xavier_uniform_ as xavier_uniform_init, calculate_gain
 from torch import Tensor
+
+from datetime import datetime
 
 from datasets import CustomImageDataset
 
@@ -67,12 +72,12 @@ class CustomModel(nn.Module):
     
     def fit(self, x, y, optimizer, loss_fn, batch_size=64, epochs=10, verbose=1, gpu_id=0, transforms=None):
         dataset = TensorDataset(x, y)
-        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=len(x) % batch_size == 1)
+        data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, drop_last=len(x) % batch_size == 1, pin_memory=True)
         
         for epoch in range(epochs):
             for x_batch, y_batch in data_loader:
-                # x_batch = x_batch.cuda(gpu_id)
-                # y_batch = y_batch.cuda(gpu_id)
+                x_batch = x_batch.cuda(gpu_id)
+                y_batch = y_batch.cuda(gpu_id)
                 # _, y_batch = y_batch.max(1)
                 
                 y_pred = self.forward(x_batch)
@@ -85,40 +90,41 @@ class CustomModel(nn.Module):
             if verbose > 0:
                 print("EPOCH: %3d/%3d - loss: %.3f" % (epoch, epochs, loss.cpu().detach().numpy()))
                 
-    def predict(self, x, batch_size=64, gpu_id=0):
+    def predict(self, x, batch_size=-1, gpu_id=0):
         self.eval()
         if batch_size == -1:
             with torch.no_grad():
-                y = F.softmax(self.forward(x))
+                y = F.softmax(self.forward(x.cuda(gpu_id)))
         else:
             dataset = TensorDataset(x)
-            data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+            data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
             
             y = None
             
             with torch.no_grad():
                 for [x_batch] in data_loader:
+                    x_batch = x_batch.cuda(gpu_id)
                     y_pred = F.log_softmax(self.forward(x_batch))
                     if y is None:
                         y = torch.tensor(y_pred)
                     else:
                         y = torch.cat([y, y_pred], axis=0)
         self.train()
-        return y.detach()
+        return y.cpu().detach()
     
     def reset(self):
         for layer in self.layers:
             if isinstance(layer, nn.Linear):
                 kaiming_uniform_init(layer.weight)
             elif isinstance(layer, nn.Conv2d):
-                xavier_uniform_init(layer.weight)                
+                xavier_uniform_init(layer.weight)     
+            elif isinstance(layer, nn.LSTM):
+                layer.reset_parameters()        
             
             if (isinstance(layer, nn.Linear) or isinstance(layer, nn.Conv2d)) and layer.bias is not None:
                 zeros_init(layer.bias)
                 
     def forward(self, x):
-        print(self.layers(x))
-        exit()
         return self.layers(x)
         
 
@@ -186,19 +192,39 @@ class ConvModel(CustomModel):
 
 class TextModel(CustomModel):
     
-    def __init__(self, input_dim, output_dim, emb_dim, lstm_cells=128, dense_layer_sizes=[128]):
+    def __init__(self, input_dim, output_dim, emb_dim, embedding_path=None, dense_layer_sizes=[128]):
         super(TextModel, self).__init__()
-        self.lstm_cells = lstm_cells
         self.dense_layer_sizes = dense_layer_sizes
+        self.embedding_path = embedding_path
+        self._create_model(input_dim, emb_dim, output_dim)
     
     def _create_model(self, input_dim, emb_dim, output_dim):
+        vectors = pickle.load(open(self.embedding_path, "rb"))
+        self.embedding = nn.Embedding.from_pretrained(vectors)
+        self.embedding.weight.requires_grad = False
         
-        layers = []
-        layers.append(nn.Embedding(input_dim, emb_dim))
-        """
-        layers.append(nn.LSTM(emb_dim, self.lstm_cells))
+        self.pooling = nn.AvgPool2d((input_dim[0], 1))
         
-        for i in range(self.dense_layer_sizes):
-            layers.append(nn.Linear)
-        """
-        self.layers = nn.Sequential(*layers)
+        linear_layers = []
+        for i in range(len(self.dense_layer_sizes)):
+            if i == 0:
+                linear_layers.append(nn.Linear(emb_dim, self.dense_layer_sizes[i]))
+            else:
+                linear_layers.append(nn.Linear(self.dense_layer_sizes[i-1], self.dense_layer_sizes[i]))
+            linear_layers.append(nn.ReLU())
+            
+        linear_layers.append(nn.Linear(self.dense_layer_sizes[-1], output_dim))
+        
+        self.layers = [self.embedding, self.pooling] + linear_layers
+        self.linear_layers = nn.ModuleList(linear_layers)
+        
+    def forward(self, x):
+        x = self.embedding(x)
+        
+        x = self.pooling(x)
+        x = x.squeeze(1)
+        
+        for layer in self.linear_layers:
+            x = layer(x)
+        
+        return x

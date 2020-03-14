@@ -3,9 +3,7 @@
     "loader_fn": "torchvision.datasets.MNIST",
     "train_size": 500,
     "val_size": 1500,
-    "max_timesteps": 300,
     "batch_size": 256,
-    "pred_batch_size": -1,
     "model_init_fn": "model.DenseModel",
     "model_kwargs": {
         "layer_sizes": [256, 128]

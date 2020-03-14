@@ -1,6 +1,8 @@
 {
     "name": "SVHN",
     "loader_fn": "torchvision.datasets.SVHN",
+    "dataset_data": "data",
+    "dataset_labels": "labels",
     "train_size": 500,
     "val_size": 1500,
     "batch_size": 256,
@@ -8,5 +10,6 @@
     "model_kwargs": {
         "n_filters": [16, 32],
         "fully_connected_layer": 64
-    }
+    },
+    "pred_batch_size": 4096
 }

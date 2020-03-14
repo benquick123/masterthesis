@@ -3,6 +3,7 @@ import pickle
 import json
 import os
 import importlib
+import inspect
 # from torchvision.datasets import MNIST
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import log_loss, mean_squared_error
@@ -581,7 +582,7 @@ class SelfTeachingBaseEnv(gym.Env):
                                       "significance_threshold": 0.001,
                                       "significance_decay": 0.0,
                                       "epochs_per_step": 1,
-                                      "worker_id": 0,
+                                          "worker_id": 0,
                                       "reward_scale": 1.0,
                                       "model_lr": 0.001,
                                       "train_size": 500,
@@ -589,7 +590,9 @@ class SelfTeachingBaseEnv(gym.Env):
                                       "loader_kwargs": {
                                           "root": "/opt/workspace/host_storage_hdd",
                                           "download": True
-                                          }
+                                          },
+                                      "dataset_data": "data",
+                                      "dataset_labels": "targets"
                                       }, 
                  override_hyperparams={}):
         
@@ -618,47 +621,60 @@ class SelfTeachingBaseEnv(gym.Env):
         
         assert "train" not in self.hyperparams['loader_kwargs']
         # implementation assumes a interface otherwise found in torchvision.datasets.
-        train = dataset_loader_fn(train=True, **self.hyperparams['loader_kwargs'])
-        test = dataset_loader_fn(train=False, **self.hyperparams['loader_kwargs'])
+        loader_fn_params = inspect.signature(dataset_loader_fn).parameters
+        if 'train' in loader_fn_params:
+            train = dataset_loader_fn(train=True, **self.hyperparams['loader_kwargs'])
+            test = dataset_loader_fn(train=False, **self.hyperparams['loader_kwargs'])
+        elif 'split' in loader_fn_params:
+            train = dataset_loader_fn(split="train", **self.hyperparams['loader_kwargs'])
+            test = dataset_loader_fn(split="test", **self.hyperparams['loader_kwargs'])
+        else:
+            print("Function doesn't accept 'train' or 'split' parameter.")
+            raise AttributeError
         
         # ensure train and test are numpy arrays by first converting them to Tensor and then back to np.array
-        self.X_train = torch.tensor(train.data).numpy()
-        self.y_train = torch.tensor(train.targets).numpy()
-        self.X_test = torch.tensor(test.data).numpy()
-        self.y_test = torch.tensor(test.targets).numpy()
+        self.X_train = torch.tensor(getattr(train, self.hyperparams['dataset_data'])).numpy()
+        self.y_train = torch.tensor(getattr(train, self.hyperparams['dataset_labels'])).numpy()
+        self.X_test = torch.tensor(getattr(test, self.hyperparams['dataset_data'])).numpy()
+        self.y_test = torch.tensor(getattr(test, self.hyperparams['dataset_labels'])).numpy()
         
         if isinstance(self.hyperparams['train_size'], float):
             self.hyperparams['train_size'] = int(len(X_train) * self.hyperparams['train_size'])
         if isinstance(self.hyperparams['val_size'], float):
             self.hyperparams['val_size'] = int(len(X_train) * self.hyperparams['val_size'])
         
-        self.X_train = self.X_train.astype('float32')
-        self.X_test = self.X_test.astype('float32')
-        if np.max(self.X_train) > 1.0:
-            self.X_train = self.X_train / 255
-            self.X_test = self.X_test / 255
-            
         if self.hyperparams['model_init_fn'] == 'model.DenseModel':
+            self.X_train = self.X_train.astype('float32')
+            self.X_test = self.X_test.astype('float32')
             self.X_train = self.X_train.reshape(self.X_train.shape[:1] + (np.prod(self.X_train.shape[1:]), ))
             self.X_test = self.X_test.reshape(self.X_test.shape[:1] + (np.prod(self.X_test.shape[1:]), ))
+            
+        if self.hyperparams['model_init_fn'] == 'model.ConvModel':
+            self.X_train = self.X_train.astype('float32')
+            self.X_test = self.X_test.astype('float32')
+            # swap axes from NHWC to NCHW, if necessary.
+            if self.X_train.shape[1] not in {1, 3}:
+                self.X_train = np.transpose(self.X_train, (0, 3, 1, 2))
+            if self.X_train.shape[1] not in {1, 3}:
+                self.X_test = np.transpose(self.X_test, (0, 3, 1, 2))
+            
+        if np.max(self.X_train) > 1.0 and self.hyperparams['model_init_fn'] in {'model.ConvModel', 'model.DenseModel'}:
+            self.X_train = self.X_train / 255
+            self.X_test = self.X_test / 255
         
         self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(self.X_train, self.y_train, test_size=self.hyperparams['val_size'], random_state=0)
         self.X_train, self.X_unlabel, self.y_train, _ = train_test_split(self.X_train, self.y_train, train_size=self.hyperparams['train_size'], random_state=0)
         
-        self.X_train = torch.tensor(self.X_train).cuda(self.hyperparams['gpu_id'])
-        self.y_train = torch.tensor(self.y_train, dtype=torch.long).cuda(self.hyperparams['gpu_id'])
-        self.X_val = torch.tensor(self.X_val).cuda(self.hyperparams['gpu_id'])
-        self.y_val = torch.tensor(self.y_val, dtype=torch.long).cuda(self.hyperparams['gpu_id'])
-        self.X_unlabel = torch.tensor(self.X_unlabel).cuda(self.hyperparams['gpu_id'])
+        self.X_train = torch.tensor(self.X_train) # .cuda(self.hyperparams['gpu_id'])
+        self.y_train = torch.tensor(self.y_train, dtype=torch.long) # .cuda(self.hyperparams['gpu_id'])
         
-        if self.hyperparams['model_init_fn'] == 'model.ConvModel':
-            # swap axes form NHWC to NCHW
-            self.X_train = self.X_train.permute(0, 3, 1, 2)
-            self.X_unlabel = self.X_unlabel.permute(0, 3, 1, 2)
-            self.X_val = self.X_val.permute(0, 3, 1, 2)
-            
-        self.X_test = torch.tensor(self.X_val).cuda(self.hyperparams['gpu_id'])
-        self.y_test = torch.tensor(self.y_val).cuda(self.hyperparams['gpu_id'])
+        self.X_val = torch.tensor(self.X_val) # .cuda(self.hyperparams['gpu_id'])
+        self.y_val = torch.tensor(self.y_val, dtype=torch.long) # .cuda(self.hyperparams['gpu_id'])
+        
+        self.X_unlabel = torch.tensor(self.X_unlabel) # .cuda(self.hyperparams['gpu_id'])
+        
+        self.X_test = torch.tensor(self.X_val) # .cuda(self.hyperparams['gpu_id'])
+        self.y_test = torch.tensor(self.y_val) # .cuda(self.hyperparams['gpu_id'])
         
         # save number of classes for later use:
         self.hyperparams['n_classes'] = len(self.y_train.unique())
@@ -722,9 +738,9 @@ class SelfTeachingBaseEnv(gym.Env):
                         verbose=0,
                         gpu_id=self.hyperparams['gpu_id'])
         
-        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['pred_batch_size']).detach()
-        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['pred_batch_size']).detach()
-        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['pred_batch_size']).detach()
+        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id']).detach()
+        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id']).detach()
+        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id']).detach()
         
         self.y_unlabel_estimates = (1 - self.hyperparams['y_estimated_lr']) * self.y_unlabel_estimates + self.hyperparams['y_estimated_lr'] * self.last_y_unlabel_pred.exp()
         self.y_unlabel_estimates /= self.y_unlabel_estimates.sum(axis=1).view((-1, 1))
@@ -752,11 +768,11 @@ class SelfTeachingBaseEnv(gym.Env):
         
         self.last_action = torch.zeros(self.action_space.shape[0])
         
-        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['pred_batch_size']).detach()
-        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['pred_batch_size']).detach()
-        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['pred_batch_size']).detach()
+        self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id']).detach()
+        self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id']).detach()
+        self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id']).detach()
         
-        self.y_unlabel_estimates = torch.ones((self.X_unlabel.shape[0], self.hyperparams['n_classes']), device=torch.device('cuda', self.hyperparams['gpu_id'])) * (1 / self.hyperparams['n_classes'])
+        self.y_unlabel_estimates = torch.ones((self.X_unlabel.shape[0], self.hyperparams['n_classes'])) * (1 / self.hyperparams['n_classes']) # , device=torch.device('cuda', self.hyperparams['gpu_id'])
         self.timestep = 0
         self.last_reward = 0
         # self.last_mse_loss = self.mse_loss(self.last_y_val_pred.exp(), self.y_val)

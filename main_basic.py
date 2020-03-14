@@ -1,7 +1,7 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-gpu_num = '1,2,3'
+gpu_num = '1, 2, 3'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
 
@@ -26,6 +26,7 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser(description="Runner for one dataset pipeline.")
     parser.add_argument("--dataset", type=str, action="store", required=True, help="Dataset to use.")
+    parser.add_argument("--num-workers", type=int, default=1, action="store", help="Number of workers to initialize and run the experiments with.")
     args = parser.parse_args()
 
     """
@@ -42,8 +43,7 @@ if __name__ == '__main__':
                       }
                   }
     
-    worker_offset = 0
-    num_workers = 1
+    num_workers = args.num_workers
     initial_lr = 5e-5
     final_lr = 5e-5
     num_steps = 500000
@@ -51,7 +51,7 @@ if __name__ == '__main__':
     n_warmup = learning_starts
     batch_size = 16
     rl_hidden_layer_sizes = [128, 128]
-    buffer_size = 100000
+    buffer_size = 150000
     
     BaseManager.register('ReplayBuffer', ReplayBuffer)
     manager = BaseManager()
@@ -69,7 +69,7 @@ if __name__ == '__main__':
     # exit()
     del env
         
-    folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-")
+    folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-").split(".")[0]
     save_path = '/opt/workspace/host_storage_hdd/results/' + folder_name + '_' + env_kwargs['dataset'] + '/'
     os.makedirs(save_path, exist_ok=True)
     save_self(save_path)
@@ -87,7 +87,7 @@ if __name__ == '__main__':
     share_parameters(sac_trainer.v_optimizer)
     
     processes = []
-    for i in range(worker_offset, num_workers + worker_offset):
+    for i in range(num_workers):
         process = Process(target=worker,
                           kwargs={'worker_id': i,
                                   'sac_trainer': sac_trainer,
@@ -101,6 +101,7 @@ if __name__ == '__main__':
                                   'n_updates': num_workers,
                                   'batch_size': batch_size,
                                   'callback': learn_callback,
+                                  'callback_kwargs': {'test_interval': 70 // num_workers},
                                   'log_path': save_path}
                           )
         process.daemon = True

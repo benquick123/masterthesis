@@ -124,7 +124,5 @@ ab
 
 - thorough analysis: confusion matrix, results with different number of labeled samples: 100, 500, 1000 and all.
 - try out 2 versions of each network.
-- experiment_runner.py
-- save replay_buffer
 
 - curriculum learning: first present only small part of labeled samples and then gradually bring in more.
