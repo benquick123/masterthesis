@@ -1,13 +1,14 @@
 {
     "name": "CIFAR-10",
     "loader_fn": "torchvision.datasets.CIFAR10",
-    "train_size": 500,
+    "train_size": 1000,
     "val_size": 1500,
-    "batch_size": 256,
-    "pred_batch_size": 8192,
+    "max_timesteps": 300,
     "model_init_fn": "model.ConvModel",
     "model_kwargs": {
-        "n_filters": [16, 32],
-        "fully_connected_layer": 64
-    }
+        "n_filters": [32, 48],
+        "fully_connected_layer": 128
+    },
+    "batch_size": 256,
+    "pred_batch_size": 8192
 }

@@ -11,8 +11,9 @@ torch.multiprocessing.set_start_method('forkserver', force=True)
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from torch.distributions import Normal
 from torch.utils.tensorboard import SummaryWriter
+
+from model import ValueNetwork, PolicyNetwork, SoftQNetwork, Alpha
 
 
 class SharedAdam(optim.Optimizer):
@@ -105,15 +106,15 @@ class ReplayBuffer:
         self.buffer = []
         self.position = 0
 
-    def push(self, state, action, reward, next_state, done):
+    def push(self, state, action, reward, next_state, done, hash_str=None):
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
-        self.buffer[self.position] = (state, action, reward, next_state, done)
+        self.buffer[self.position] = (state, action, reward, next_state, done, hash_str)
         self.position = int((self.position + 1) % self.capacity)
 
     def sample(self, batch_size):
         batch = random.sample(self.buffer, batch_size)
-        state, action, reward, next_state, done = map(np.stack, zip(*batch))
+        state, action, reward, next_state, done, _ = map(np.stack, zip(*batch))
         return state, action, reward, next_state, done
 
     def __len__(self):  # cannot work in multiprocessing case, len(replay_buffer) is not available in proxy of manager!
@@ -127,220 +128,6 @@ class ReplayBuffer:
         
     def load_buffer(self, filepath):
         self.buffer, self.position = pickle.load(open(os.path.join(filepath, "replay_buffer.pkl"), "rb"))
-
-
-class ValueNetwork(nn.Module):
-    def __init__(self, state_dim, hidden_layer_sizes=[64, 64], init_w=3e-3):
-        super(ValueNetwork, self).__init__()
-
-
-        self.linears = nn.ModuleList()
-        for i in range(len(hidden_layer_sizes)):
-            if i == 0:
-                self.linears.append(nn.Linear(state_dim, hidden_layer_sizes[i]))
-            else:
-                self.linears.append(nn.Linear(hidden_layer_sizes[i-1], hidden_layer_sizes[i]))
-        
-        self.linears.append(nn.Linear(hidden_layer_sizes[-1], 1))
-        
-        self.linears[-1].weight.data.uniform_(-init_w, init_w)
-        self.linears[-1].bias.data.uniform_(-init_w, init_w)
-        
-    def forward(self, state):
-        x = F.relu(self.linears[0](state))
-        
-        for i in range(1, len(self.linears)-1):
-            x = F.relu(self.linears[i](x))
-        x = self.linears[-1](x)
-            
-        return x
-    
-    def copy_weights(self, old_model):
-        assert all([self.linears[i].weight.shape == old_model.linears[i].weight.shape and self.linears[i].bias.shape == old_model.linears[i].bias.shape for i in range(len(self.linears))])
-        
-        for i in range(len(self.linears)):
-            self.linears[i].weight.data = old_model.linears[i].weight.data
-            self.linears[i].bias.data = old_model.linears[i].bias.data
-            
-    def freeze(self, freeze_mask):
-        raise NotImplementedError
-
-
-class SoftQNetwork(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_layer_sizes=[64, 64], init_w=3e-3):
-        super(SoftQNetwork, self).__init__()
-        
-        self.linears = nn.ModuleList()
-        for i in range(len(hidden_layer_sizes)):
-            if i == 0:
-                self.linears.append(nn.Linear(state_dim + action_dim, hidden_layer_sizes[i]))
-            else:
-                self.linears.append(nn.Linear(hidden_layer_sizes[i-1], hidden_layer_sizes[i]))
-                
-        self.linears.append(nn.Linear(hidden_layer_sizes[-1], 1))                
-
-        self.linears[-1].weight.data.uniform_(-init_w, init_w)
-        self.linears[-1].bias.data.uniform_(-init_w, init_w)
-        
-        self.state_dim = state_dim
-        self.action_dim = action_dim
-
-    def forward(self, state, action):
-        # the dim 0 is number of samples  
-        x = torch.cat([state, action], 1)
-        
-        for i in range(len(self.linears)-1):
-            x = F.relu(self.linears[i](x))
-            
-        x = self.linears[-1](x)
-        return x
-    
-    def copy_weights(self, old_model, tile_action_tensors=True, noise_weight=0.0, old_model_weight=1.0):
-        if not tile_action_tensors:
-            copy_start_index = 0
-        else:
-            copy_start_index = 1
-            assert self.state_dim == old_model.state_dim and self.action_dim % old_model.action_dim == 0
-            
-            n_repeats = self.action_dim // old_model.action_dim
-            self.linears[0].weight.data = torch.cat([old_model.linears[0].weight.data[:, :self.state_dim], 
-                                                     self.linears[0].weight.data[:, self.state_dim:] * noise_weight + old_model.linears[0].weight.data[:, self.state_dim:].repeat(1, n_repeats) * old_model_weight], axis=1)
-            self.linears[0].bias.data = torch.cat([old_model.linears[0].bias.data[:self.state_dim], 
-                                                   self.linears[0].bias.data[self.state_dim:] * noise_weight + old_model.linears[0].bias.data[self.state_dim:] * old_model_weight], axis=0)
-        
-        assert all([self.linears[i].weight.shape == old_model.linears[i].weight.shape and self.linears[i].bias.shape == old_model.linears[i].bias.shape for i in range(copy_start_index, len(self.linears))])
-        for i in range(copy_start_index, len(self.linears)):
-            self.linears[i].weight.data = old_model.linears[i].weight.data
-            self.linears[i].bias.data = old_model.linears[i].bias.data
-            
-    def freeze(self, freeze_mask):
-        for i, freeze_bool in enumerate(freeze_mask[::-1]):
-            self.linears[i].weight.requires_grad = not freeze_bool
-            self.linears[i].bias.requires_grad = not freeze_bool
-
-
-class PolicyNetwork(nn.Module):
-    def __init__(self, state_dim, action_dim, hidden_layer_sizes=[64, 64], action_range=1., init_w=3e-3, log_std_min=-20, log_std_max=2):
-        super(PolicyNetwork, self).__init__()
-        
-        self.log_std_min = log_std_min
-        self.log_std_max = log_std_max
-        
-        self.linears = nn.ModuleList()
-        for i in range(len(hidden_layer_sizes)):
-            if i == 0:
-                self.linears.append(nn.Linear(state_dim, hidden_layer_sizes[i]))
-            else:
-                self.linears.append(nn.Linear(hidden_layer_sizes[i-1], hidden_layer_sizes[i]))
-        
-        self.mean_linear = nn.Linear(hidden_layer_sizes[-1], action_dim)
-        self.mean_linear.weight.data.uniform_(-init_w, init_w)
-        self.mean_linear.bias.data.uniform_(-init_w, init_w)
-        
-        self.log_std_linear = nn.Linear(hidden_layer_sizes[-1], action_dim)
-        self.log_std_linear.weight.data.uniform_(-init_w, init_w)
-        self.log_std_linear.bias.data.uniform_(-init_w, init_w)
-
-        self.action_range = action_range
-        self.action_dim = action_dim
-        self.state_dim = state_dim
-
-    def forward(self, state):
-        # traceback.print_stack()
-        # print(state.size(), "\n")
-        x = F.relu(self.linears[0](state))
-        
-        for i in range(1, len(self.linears)):
-            x = F.relu(self.linears[i](x))
-
-        mean = self.mean_linear(x)
-        # mean = (self.mean_linear(x))
-        log_std = torch.clamp(self.log_std_linear(x), self.log_std_min, self.log_std_max)
-        return mean, log_std
-    
-    def evaluate(self, state, epsilon=1e-6):
-        '''
-        generate sampled action with state as input wrt the policy network;
-        '''
-        mean, log_std = self.forward(state)
-        std = log_std.exp() # no clip in evaluation, clip affects gradients flow
-        
-        normal = Normal(0, 1)
-        z = normal.sample(sample_shape=mean.size())
-        
-        # reparametrization trick
-        stoh_action = mean + std * z.cuda()
-        
-        # log_pi
-        log_pi = Normal(mean, std).log_prob(stoh_action)
-        
-        stoh_action = self.action_range * torch.tanh(stoh_action)
-        det_action = self.action_range * torch.tanh(mean)
-        log_pi = (log_pi - torch.log(1.0 - stoh_action ** 2 + epsilon)).sum(dim=1, keepdim=True)
-        return det_action, stoh_action, log_pi
-
-    def get_action(self, state, deterministic):
-        state = state.unsqueeze(0).view((-1, self.state_dim)).cuda()
-
-        mean, log_std = self.forward(state)
-        if deterministic:
-            action = self.action_range * torch.tanh(mean)
-        else:
-            std = log_std.exp()
-            normal = Normal(0, 1)
-            z = normal.sample(sample_shape=mean.size()).cuda()
-            action = self.action_range * torch.tanh(mean + std * z)
-            
-        return action[0]
-
-    def copy_weights(self, old_model, tile_action_tensors=True, noise_weight=0.0, old_model_weight=1.0):        
-        assert all([self.linears[i].weight.shape == old_model.linears[i].weight.shape and self.linears[i].bias.shape == old_model.linears[i].bias.shape for i in range(len(self.linears))])
-        for i in range(len(self.linears)):
-            self.linears[i].weight.data = old_model.linears[i].weight.data
-            self.linears[i].bias.data = old_model.linears[i].bias.data
-            
-        if not tile_action_tensors:
-            assert all([o.weight.shape == n.weight.shape and o.bias.shape == n.bias.shape for o, n in [(old_model.mean_linear, self.mean_linear), (old_model.log_std_linear, self.log_std_linear)]])
-            self.mean_linear.weight.data = old_model.mean_linear.weight.data
-            self.mean_linear.bias.data = old_model.mean_linear.bias.data
-            self.log_std_linear.weight.data = old_model.log_std_linear.weight.data
-            self.log_std_linear.bias.data = old_model.log_std_linear.bias.data
-        else:
-            assert all([all([n_shape % o_shape == 0 for o_shape, n_shape in zip(o.weight.shape, n.weight.shape)]) for o, n in [(old_model.mean_linear, self.mean_linear), (old_model.log_std_linear, self.log_std_linear)]])
-            assert all([all([n_shape % o_shape == 0 for o_shape, n_shape in zip(o.bias.shape, n.bias.shape)]) for o, n in [(old_model.mean_linear, self.mean_linear), (old_model.log_std_linear, self.log_std_linear)]])
-            
-            n_repeats = self.mean_linear.weight.shape[0] // old_model.mean_linear.weight.shape[0]
-            
-            self.mean_linear.weight.data = self.mean_linear.weight.data * noise_weight + old_model.mean_linear.weight.data.repeat(n_repeats, 1) * old_model_weight
-            self.mean_linear.bias.data = self.mean_linear.bias.data * noise_weight + old_model.mean_linear.bias.data.repeat(n_repeats) * old_model_weight
-            
-            self.log_std_linear.weight.data = self.log_std_linear.weight.data * noise_weight + old_model.log_std_linear.weight.data.repeat(n_repeats, 1) * old_model_weight
-            self.log_std_linear.bias.data = self.log_std_linear.bias.data * noise_weight + old_model.log_std_linear.bias.data.repeat(n_repeats) * old_model_weight
-            
-    def freeze(self, freeze_mask):
-        for i, freeze_bool in enumerate(freeze_mask):
-            if i < len(self.linears):
-                self.linears[i].weight.requires_grad = not freeze_bool
-                self.linears[i].bias.requires_grad = not freeze_bool
-            else:
-                self.mean_linear.weight.requires_grad = not freeze_bool
-                self.mean_linear.bias.requires_grad = not freeze_bool
-                self.log_std_linear.weight.requires_grad = not freeze_bool
-                self.log_std_linear.bias.requires_grad = not freeze_bool
-                    
-
-class Alpha(nn.Module):
-    def __init__(self):
-        super(Alpha, self).__init__()
-        # initialized as [0.]: alpha->[1.]
-        self.log_alpha=torch.nn.Parameter(torch.zeros(1))
-
-    def forward(self):
-        return self.log_alpha
-    
-    def copy_weights(self, old_model, noise=0.0):
-        self.log_alpha = old_model.log_alpha
-
 
 class SAC_Trainer():
     def __init__(self, replay_buffer, state_dim, action_dim, hidden_layer_sizes=[64, 64], action_range=1., q_lr=3e-4, pi_lr=3e-4, alpha_lr=3e-4, v_lr=3e-4):
@@ -466,6 +253,8 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
         writer.add_scalar('Actions/meanTestActions', 0, 0)
         writer.add_scalar('Accuracies/testAccuracies', 0, 0)
         writer.add_scalar('Accuracies/trainAccuracies', 0, 0)
+        writer.add_scalar('Misc/numSelectedSamples', 0, 0)
+        writer.add_scalar('Misc/softmaxTemperature', 1, 0)
     else:
         writer = None
     
@@ -494,11 +283,10 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
             else:
                 action = sac_trainer.policy_net.get_action(obs, deterministic=DETERMINISTIC)
                 
-            # env doesn't adhere to OpenAI spec anymore.
-            # next_obs, new_obs, reward, done, info = env.step(action)
             next_obs, reward, done, info = env.step(action)
+            hash_str = str((n_episodes + 1) * worker_id)
             
-            replay_buffer.push(obs.cpu().detach().numpy(), action.cpu().detach().numpy(), reward.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), done)
+            replay_buffer.push(obs.cpu().detach().numpy(), action.cpu().detach().numpy(), reward.cpu().detach().numpy(), next_obs.cpu().detach().numpy(), done, hash_str)
             
             episode_reward += reward
             n_episode_steps += 1
@@ -509,6 +297,8 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
                 if writer is not None:
                     writer.add_scalar('Rewards/episodeReward', episode_reward, step)
                     writer.add_scalar('Accuracies/trainAccuracies', info['val_acc'], step)
+                    if 'use_temperature' in env.hyperparams['model_kwargs'] and env.hyperparams['model_kwargs']['use_temperature']:
+                        writer.add_scalar('Misc/softmaxTemperature', env.model.temperature_module.temperature.item(), step)
                 
                 episode_reward = 0
                 n_episode_steps = 0
@@ -534,6 +324,7 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
                 writer.add_scalar('Losses/policyLoss', policy_loss, step)
                 writer.add_scalar('Losses/valueLoss', value_loss, step)
                 writer.add_scalar('Misc/replayBufferSize', replay_buffer.get_length(), step)
+                writer.add_scalar('Misc/numSelectedSamples', info['num_samples'].cpu().numpy(), step)
                 
         if worker_id == 0:
             sac_trainer.save_model(log_path + 'final_sac_self_teaching')

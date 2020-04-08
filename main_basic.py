@@ -1,10 +1,11 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-gpu_num = '1, 2, 3'
+gpu_num = '0, 1, 2, 3'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
 
+import time
 import argparse
 from datetime import datetime
 import numpy as np
@@ -21,12 +22,30 @@ from sac_multi import SAC_Trainer, ReplayBuffer, share_parameters, worker
 from utils import save_self, learn_callback, test_pipeline
 
 
+def create_logdirs(args):
+    # create folder name and save_path
+    folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-").split(".")[0]
+    save_path = '/opt/workspace/host_storage_hdd/results/' + folder_name + '_' + args.dataset
+    save_path += "_" + args.path_postfix + "/" if args.path_postfix != "" else "/"
+    
+    # make directories and save code
+    os.makedirs(save_path, exist_ok=True)
+    save_self(save_path)
+    
+    # save arguments
+    f = open(os.path.join(save_path, "args"), "w")
+    f.write(str(args))
+    f.close()
+    return save_path
+
+
 if __name__ == '__main__':
     os.system('clear')
     
     parser = argparse.ArgumentParser(description="Runner for one dataset pipeline.")
     parser.add_argument("--dataset", type=str, action="store", required=True, help="Dataset to use.")
     parser.add_argument("--num-workers", type=int, default=1, action="store", help="Number of workers to initialize and run the experiments with.")
+    parser.add_argument("--path-postfix", type=str, default="", action="store", help="Path postfix that is added to the logging folder.")
     args = parser.parse_args()
 
     """
@@ -46,12 +65,12 @@ if __name__ == '__main__':
     num_workers = args.num_workers
     initial_lr = 5e-5
     final_lr = 5e-5
-    num_steps = 500000
-    learning_starts = 10000
+    num_steps = 300000
+    learning_starts = 20000
     n_warmup = learning_starts
     batch_size = 16
     rl_hidden_layer_sizes = [128, 128]
-    buffer_size = 150000
+    buffer_size = 200000
     
     BaseManager.register('ReplayBuffer', ReplayBuffer)
     manager = BaseManager()
@@ -65,14 +84,11 @@ if __name__ == '__main__':
 
     sac_trainer = SAC_Trainer(replay_buffer, state_dim, action_dim, hidden_layer_sizes=rl_hidden_layer_sizes, q_lr=initial_lr, pi_lr=initial_lr, alpha_lr=initial_lr, v_lr=initial_lr)
     
-    # test_pipeline(env, sac_trainer, '/opt/workspace/host_storage_hdd/results/2020-03-05_10-28-29.855557_fashion_mnist/')
+    # test_pipeline(env, sac_trainer, '/opt/workspace/host_storage_hdd/results/2020-04-05_15-19-46_cifar10_new_method/')
     # exit()
     del env
-        
-    folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-").split(".")[0]
-    save_path = '/opt/workspace/host_storage_hdd/results/' + folder_name + '_' + env_kwargs['dataset'] + '/'
-    os.makedirs(save_path, exist_ok=True)
-    save_self(save_path)
+    
+    save_path = create_logdirs(args)
 
     sac_trainer.q_net_1.share_memory()
     sac_trainer.q_net_2.share_memory()
@@ -107,12 +123,16 @@ if __name__ == '__main__':
         process.daemon = True
         processes.append(process)
         
+        # sleep for a few seconds to ensure enough memory is left.
+        time.sleep(5)
+        
     for process in processes:
         process.start()
     for process in processes:
         process.join()
     
     replay_buffer.save_buffer(save_path)
-        
+    
+    env_kwargs['override_hyperparams']['reward_history_threshold'] = -10.0
     test_pipeline(SelfTeachingBaseEnv(**env_kwargs), sac_trainer, save_path)
 

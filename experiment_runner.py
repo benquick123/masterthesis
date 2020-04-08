@@ -4,9 +4,9 @@ import time
 
 if __name__ == '__main__':
     args = [
-        ("ag_news", 6),
-        ("cifar10", 9),
-        ("dbpedia", 12),
+        # ("ag_news", 9),
+        # ("cifar10", 6),
+        ("dbpedia", 6),
         ("fasion_mnist", 18),
         ("imdb", 15),
         ("mnist", 18),

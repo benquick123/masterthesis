@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, TensorDataset
 
 
 class CustomImageDataset(Dataset):
@@ -26,3 +26,10 @@ class CustomImageDataset(Dataset):
             x_sample = x_sample.view(-1)
             
         return self.x[idx], self.y[idx]
+    
+    
+class TextDataset(TensorDataset):    
+    def __init__(self, X, y, **kwargs):
+        super(TextDataset, self).__init__(X, y, **kwargs)
+        self.data = X
+        self.targets = y

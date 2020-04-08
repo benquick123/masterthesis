@@ -3,9 +3,9 @@
     "loader_fn": "torchvision.datasets.FashionMNIST",
     "train_size": 500,
     "val_size": 1500,
-    "batch_size": 256,
     "model_init_fn": "model.DenseModel",
     "model_kwargs": {
         "layer_sizes": [256, 128]
-    }
+    },
+    "batch_size": 256
 }
