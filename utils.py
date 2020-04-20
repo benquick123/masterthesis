@@ -47,7 +47,7 @@ def learn_callback(_locals, _globals, reward_lookback=20, test_interval=100, tes
                 _locals['sac_trainer'].save_model(_locals['log_path'] + 'best_by_test_sac_self_teaching')
 
                 plot_actions(mean_actions, std_actions, label=str(num_episodes) + "_test", color="C5", filepath=_locals['log_path'])
-                plot([mean_accuracies], [std_accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.5, 1.0), filename=str(num_episodes) + "_test" + "_accuracy_%.4f" % (mean_accuracies[-1]), filepath=_locals['log_path'])
+                plot([mean_accuracies], [std_accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.0, 1.0), filename=str(num_episodes) + "_test" + "_accuracy_%.4f" % (mean_accuracies[-1]), filepath=_locals['log_path'])
             
             if 'writer' in _locals:
                 writer = _locals['writer']
@@ -57,14 +57,14 @@ def learn_callback(_locals, _globals, reward_lookback=20, test_interval=100, tes
     return True
 
 
-def test(model, env, n_episodes=10, override_action=False, scale=False, render=True, take_all_clusters=False, use_alpha=False):
+def test(model, env, n_episodes=10, override_action=False, scale=False, render=True, take_all_clusters=False):
     rewards = []
     steps = []
     actions = []
     num_samples = []
     
     return_accuracies = np.zeros((n_episodes, env.hyperparams['max_timesteps'] + 1))
-    for i in range(n_episodes):        
+    for i in range(n_episodes):
         obs = env.reset()
         done = False
         rewards_sum = 0
@@ -85,11 +85,12 @@ def test(model, env, n_episodes=10, override_action=False, scale=False, render=T
                     
             # env does not adhere do OpenAI spec anymore.
             # next_obs, obs, reward, done, info = env.step(action)
-            obs, reward, done, info = env.step(action, use_alpha)
+            obs, reward, done, info = env.step(action)
             
             reward = reward.cpu().detach().numpy()
             info['val_acc'] = info['val_acc'].cpu().detach().numpy()
-            action = action.view(-1)
+            
+            action = np.array([info['true_action'][i].cpu().detach().numpy() for i in range(len(info['true_action']))])
             
             rewards_sum += reward
             num_steps += 1
@@ -98,7 +99,7 @@ def test(model, env, n_episodes=10, override_action=False, scale=False, render=T
                 return_accuracies[i, info['timestep']] = info['val_acc']
             
             actions[-1].append(action.tolist())
-            num_samples[-1].append(info['num_samples'].cpu().numpy())
+            num_samples[-1].append(info['num_samples'].cpu().numpy() / len(env.X_unlabel))
                 
         print(i, ": CUMULATIVE REWARD:", rewards_sum, "- NUM STEPS:", num_steps, "- VAL ACCURACY:", info['val_acc'])
         rewards.append(rewards_sum)
@@ -128,12 +129,13 @@ def plot(mean_arr, std_arr, labels, y_lim=(0.0, 1.0), filename='RL_results', fil
         plt.savefig(filepath + filename + '.svg')
 
 
-def plot_actions(mean_actions, std_actions, label, color, filepath=None):
+def plot_actions(mean_actions, std_actions, label, color, filepath=None, y_lim=(0.0, 1.0)):
     plt.clf()
     for i in range(mean_actions.shape[1]):
         plt.plot(np.arange(len(mean_actions[:, i])), mean_actions[:, i], color=color)
         plt.fill_between(np.arange(len(mean_actions[:, i])), mean_actions[:, i] - std_actions[:, i], mean_actions[:, i] + std_actions[:, i], color=color, alpha=0.4)
 
+    plt.ylim(y_lim)
     if filepath is not None:
         plt.savefig(filepath + label.replace(" ", "_") + "_actions" + ".svg")
 
@@ -158,27 +160,26 @@ def test_pipeline(env, trainer, model_path=None, save=True):
         trainer.load_model(model_path + 'best_by_test_sac_self_teaching')
     trainer.to_cuda()
     
-    # mean_acc, std_acc, mean_actions, std_actions, _, _ = test(trainer, env, override_action=[[0.0, 1.0]], n_episodes=10, use_alpha=True)
-    # mean_accs.append(mean_acc)
-    # std_accs.append(std_acc)
-    # 
-    # mean_acc, std_acc, mean_actions, std_actions, _, _ = test(trainer, env, override_action=[[0.982, -7.0/9.0]], n_episodes=30)
-    # mean_accs.append(mean_acc)
-    # std_accs.append(std_acc)
-    # 
-    # mean_acc, std_acc, mean_actions, std_actions, _, _ = test(trainer, env, override_action=True, n_episodes=10)
-    # mean_accs.append(mean_acc)
-    # std_accs.append(std_acc)
+    mean_acc, std_acc, _, _, _, _ = test(trainer, env, override_action=[[0.0, 1.0]], n_episodes=10)
+    mean_accs.append(mean_acc)
+    std_accs.append(std_acc)
+    
+    mean_acc, std_acc, _, _, _, _ = test(trainer, env, override_action=[[0.982, -7.0/9.0]], n_episodes=30)
+    mean_accs.append(mean_acc)
+    std_accs.append(std_acc)
+
+    mean_acc, std_acc, _, _, _, _ = test(trainer, env, override_action=True, n_episodes=10)
+    mean_accs.append(mean_acc)
+    std_accs.append(std_acc)
     
     mean_acc, std_acc, mean_actions, std_actions, mean_samples, std_samples = test(trainer, env, n_episodes=30)
     mean_accs.append(mean_acc)
     std_accs.append(std_acc)
     
-    exit()  
-    
     if save:
-        plot([mean_samples], [std_samples], labels=["num selected samples"], y_lim=(0, 10000), filename='num_samples', filepath=model_path)
-        plot(mean_accs, std_accs, labels=["all_samples", "manually set thresholds", "label only baseline", "RL trained - test"], y_lim=(0.0, 0.6), filename="test_curves", filepath=model_path)
+        plot_actions(mean_actions, std_actions, label="test", color="C5", filepath=model_path)
+        plot([mean_samples], [std_samples], labels=["num selected samples"], y_lim=(0, 1), filename='test_samples', filepath=model_path)
+        plot(mean_accs, std_accs, labels=["all samples", "manually set thresholds", "label only baseline", "RL trained - test"], y_lim=(0.0, 1.0), filename="test_curves", filepath=model_path)
         
     obs = env.reset()
     model = env.model

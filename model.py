@@ -344,8 +344,8 @@ class CustomModel(nn.Module):
             if verbose > 0:
                 print("EPOCH: %3d/%3d - loss: %.3f" % (epoch, epochs, loss.cpu().detach().numpy()))
                 
-    def fit_semi(self, x_label, y_label, x_unlabel, y_unlabel, optimizer, loss_fn, batch_size=64, epochs=10, verbose=1, gpu_id=0, alpha=3):
-        if x_unlabel is None or len(x_unlabel) == 0:
+    def fit_semi(self, x_label, y_label, x_unlabel, y_unlabel, optimizer, loss_fn, batch_size=64, epochs=10, verbose=1, gpu_id=0, alpha=1):
+        if x_unlabel is None or len(x_unlabel) == 0 or alpha < 1e-6:
             self.fit(x_label, y_label, optimizer, loss_fn, batch_size, epochs, verbose, gpu_id)
         else:
             labeled_dataset = TensorDataset(x_label, y_label)
@@ -370,11 +370,10 @@ class CustomModel(nn.Module):
                     try:
                         x_batch_unlabel, y_batch_unlabel = next(unlabeled_iter)
                     except StopIteration:
-                        unlabeled_iter = iter(unlabeled_loader)
-                        x_batch_unlabel, y_batch_unlabel = next(unlabeled_iter)
+                        x_batch_unlabel, y_batch_unlabel = None, None
                             
                     y_pred_label = self.forward(x_batch_label)
-                    if alpha > 1e-6:
+                    if x_batch_unlabel is not None and y_batch_unlabel is not None:
                         y_pred_unlabel = self.forward(x_batch_unlabel)
                         loss = loss_fn(y_pred_label, y_batch_label) + alpha * loss_fn(y_pred_unlabel, y_batch_unlabel)
                     else:

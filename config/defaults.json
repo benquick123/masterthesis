@@ -1,0 +1,22 @@
+{
+    "y_estimated_lr": 0.3,
+    "max_timesteps": 500,
+    "min_timesteps": 50,
+    "batch_size": 64,
+    "pred_batch_size": -1,
+    "reward_history_threshold": -10.0,
+    "reward_history_length": 100,
+    "epochs_per_step": 1,
+    "worker_id": 0,
+    "reward_scale": 1.0,
+    "model_lr": 0.001,
+    "train_size": 500,
+    "val_size": 1500,
+    "unlabel_alpha": 1.0,
+    "loader_kwargs": {
+        "root": "/opt/workspace/host_storage_hdd",
+        "download": true
+    },
+    "dataset_data": "data",
+    "dataset_labels": "targets"
+}

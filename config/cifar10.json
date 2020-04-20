@@ -10,5 +10,6 @@
         "fully_connected_layer": 128
     },
     "batch_size": 256,
-    "pred_batch_size": 8192
+    "pred_batch_size": 8192,
+    "unlabel_alpha": 0.1
 }

@@ -571,40 +571,20 @@ class SelfTeachingBaseEnv(gym.Env):
     reward_range = (-10.0, 10.0)
     spec = gym.spec("SelfTeachingBase-v0")
     
-    def __init__(self, 
-                 dataset, 
-                 config_path="./config", 
-                 default_hyperparams={"y_estimated_lr": 0.3,
-                                      "max_timesteps": 500,
-                                      "min_timesteps": 50,
-                                      "batch_size": 64,
-                                      "pred_batch_size": -1,
-                                      "reward_history_threshold": -10.0,
-                                      "reward_history_length": 100,
-                                      "epochs_per_step": 1,
-                                      "worker_id": 0,
-                                      "reward_scale": 1.0,
-                                      "model_lr": 0.001,
-                                      "train_size": 500,
-                                      "val_size": 1500,
-                                      "loader_kwargs": {
-                                          "root": "/opt/workspace/host_storage_hdd",
-                                          "download": True
-                                          },
-                                      "dataset_data": "data",
-                                      "dataset_labels": "targets"
-                                      }, 
-                 override_hyperparams={}):
-        
+    def __init__(self, dataset, config_path, override_hyperparams={}):
         super(SelfTeachingBaseEnv, self).__init__()
         
-        json_config = json.load(open(os.path.join(config_path, dataset.lower() + ".json"), "r"))
+        default_hyperparams = json.load(open(os.path.join(config_path, "defaults.json")))
+        experiment_hyperparams = json.load(open(os.path.join(config_path, dataset.lower() + ".json"), "r"))
         # take care for correct hyperparameters initialization
         self.hyperparams = dict(default_hyperparams)
-        self.hyperparams.update(json_config)
+        self.hyperparams.update(experiment_hyperparams)
         self.hyperparams.update(override_hyperparams)
         
+        # weird lambda trick that freezes the 'unlabel_alpha' parameter.
+        self.hyperparams['unlabel_alpha'] = (lambda step, alpha=self.hyperparams['unlabel_alpha'] : alpha) if self.hyperparams['unlabel_alpha'] is not None else self._get_alpha
         self.hyperparams['gpu_id'] = self.hyperparams['worker_id'] % torch.cuda.device_count()
+        
         print("Initializing environment:", self.hyperparams['worker_id'])
         
         self.model = None
@@ -752,7 +732,7 @@ class SelfTeachingBaseEnv(gym.Env):
         else:
             return 3.0
     
-    def step(self, action, use_alpha=False):
+    def step(self, action):
         # rescale action to [0, 1] range.
         action = ((action + 1) / 2).view(-1)
         range_scale = 0.5 - torch.abs(0.5 - action[0])
@@ -778,20 +758,17 @@ class SelfTeachingBaseEnv(gym.Env):
                             verbose=0,
                             gpu_id=self.hyperparams['gpu_id'])
         """
+        
         self.model.fit_semi(self.X_train, self.y_train, 
-                            self.X_unlabel[y_unlabel_estimates_indices] if (not use_alpha) or self._get_alpha(self.timestep) > 1e-6 else None, 
-                            y_unlabel_estimates_argmax[y_unlabel_estimates_indices] if (not use_alpha) or self._get_alpha(self.timestep) > 1e-6 else None,
+                            self.X_unlabel[y_unlabel_estimates_indices], 
+                            y_unlabel_estimates_argmax[y_unlabel_estimates_indices],
                             optimizer=self.model_optimizer,
                             loss_fn=self.model_loss,
                             epochs=self.hyperparams['epochs_per_step'], 
                             batch_size=self.hyperparams['batch_size'], 
                             verbose=0,
                             gpu_id=self.hyperparams['gpu_id'],
-                            alpha=3.0 if not use_alpha else self._get_alpha(self.timestep))
-        
-        # self.last_y_val_pred = self.model.predict(self.X_val_data_loader, gpu_id=self.hyperparams['gpu_id'])
-        # self.last_y_unlabel_pred = self.model.predict(self.X_unlabel_data_loader, gpu_id=self.hyperparams['gpu_id'])
-        # self.last_y_label_pred = self.model.predict(self.X_train_data_loader, gpu_id=self.hyperparams['gpu_id'])
+                            alpha=self.hyperparams['unlabel_alpha'](self.timestep))
         
         self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id'])
         self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id'])
@@ -816,22 +793,18 @@ class SelfTeachingBaseEnv(gym.Env):
         self.timestep += 1
         terminal = True if self.timestep >= self.hyperparams['max_timesteps'] or not self._significant(self.last_reward) else False
         
-        return self.last_state, self.last_reward, terminal, { 'val_acc': self.last_val_accuracy, 'timestep': self.timestep, 'num_samples': self.len_selected_samples }
+        return self.last_state, self.last_reward, terminal, { 'val_acc': self.last_val_accuracy, 'timestep': self.timestep, 'num_samples': self.len_selected_samples, "true_action": self.last_action }
         
     def reset(self):
         self._initialize_model()
         
         self.last_action = torch.zeros(self.action_space.shape[0])
         
-        # self.last_y_val_pred = self.model.predict(self.X_val_data_loader, gpu_id=self.hyperparams['gpu_id'])
-        # self.last_y_unlabel_pred = self.model.predict(self.X_unlabel_data_loader, gpu_id=self.hyperparams['gpu_id'])
-        # self.last_y_label_pred = self.model.predict(self.X_train_data_loader, gpu_id=self.hyperparams['gpu_id'])
-        
         self.last_y_val_pred = self.model.predict(self.X_val, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id'])
         self.last_y_unlabel_pred = self.model.predict(self.X_unlabel, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id'])
         self.last_y_label_pred = self.model.predict(self.X_train, batch_size=self.hyperparams['pred_batch_size'], gpu_id=self.hyperparams['gpu_id'])
         
-        self.y_unlabel_estimates = torch.ones((self.X_unlabel.shape[0], self.hyperparams['n_classes'])).cuda(self.hyperparams['gpu_id']) * (1 / self.hyperparams['n_classes'])
+        self.y_unlabel_estimates = torch.ones((self.X_unlabel.shape[0], self.hyperparams['n_classes'])).cuda(self.hyperparams['gpu_id']) / self.hyperparams['n_classes']
         self.timestep = 0
         self.last_reward = 0
         # self.last_mse_loss = self.mse_loss(self.last_y_val_pred.exp(), self.y_val)

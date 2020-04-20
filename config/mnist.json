@@ -9,5 +9,6 @@
         "n_filters": [32, 48]
     },
     "batch_size": 128,
-    "pred_batch_size": 4096
+    "pred_batch_size": 4096,
+    "unlabel_alpha": 0.1
 }

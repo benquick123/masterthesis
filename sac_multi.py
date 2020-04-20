@@ -129,6 +129,7 @@ class ReplayBuffer:
     def load_buffer(self, filepath):
         self.buffer, self.position = pickle.load(open(os.path.join(filepath, "replay_buffer.pkl"), "rb"))
 
+
 class SAC_Trainer():
     def __init__(self, replay_buffer, state_dim, action_dim, hidden_layer_sizes=[64, 64], action_range=1., q_lr=3e-4, pi_lr=3e-4, alpha_lr=3e-4, v_lr=3e-4):
         self.replay_buffer = replay_buffer
@@ -254,7 +255,6 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
         writer.add_scalar('Accuracies/testAccuracies', 0, 0)
         writer.add_scalar('Accuracies/trainAccuracies', 0, 0)
         writer.add_scalar('Misc/numSelectedSamples', 0, 0)
-        writer.add_scalar('Misc/softmaxTemperature', 1, 0)
     else:
         writer = None
     
@@ -297,8 +297,6 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
                 if writer is not None:
                     writer.add_scalar('Rewards/episodeReward', episode_reward, step)
                     writer.add_scalar('Accuracies/trainAccuracies', info['val_acc'], step)
-                    if 'use_temperature' in env.hyperparams['model_kwargs'] and env.hyperparams['model_kwargs']['use_temperature']:
-                        writer.add_scalar('Misc/softmaxTemperature', env.model.temperature_module.temperature.item(), step)
                 
                 episode_reward = 0
                 n_episode_steps = 0

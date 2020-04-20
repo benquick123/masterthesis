@@ -5,13 +5,17 @@
         "path": "/opt/workspace/host_storage_hdd/.data/imdb/aclImdb",
         "loader_fn": "torchtext.datasets.IMDB",
         "emb_dim": 100,
-        "max_sample_len": 1000
+        "max_sample_len": 1000,
+        "text": "text",
+        "target": "label"
     },
     "model_init_fn": "model.TextModel",
     "model_kwargs":  {
         "emb_dim": 100,
         "embedding_path": "/opt/workspace/host_storage_hdd/.data/imdb/aclImdb/embed_vectors_1000_100.pkl"
     },
-    "pred_batch_size": 1024,
-    "batch_size": 256
+    "pred_batch_size": 4096,
+    "batch_size": 256,
+    "max_timesteps": 300,
+    "unlabel_alpha": 0.1
 }

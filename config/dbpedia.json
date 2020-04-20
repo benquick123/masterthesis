@@ -13,5 +13,6 @@
         "embedding_path": "/opt/workspace/host_storage_hdd/.data/dbpedia_csv/embed_vectors_200_100.pkl"
     },
     "pred_batch_size": 8192,
-    "batch_size": 256
+    "batch_size": 256,
+    "unlabel_alpha": 0.1
 }
