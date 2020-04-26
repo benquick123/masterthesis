@@ -1,4 +1,5 @@
 from datetime import datetime
+import errno
 import os
 import pickle
 import re
@@ -17,11 +18,113 @@ from matplotlib import pyplot as plt
 import spacy
 from sklearn.metrics import confusion_matrix
 
-# from sac_multi import ReplayBuffer
 from datasets import TextDataset
 
 best_train_mean_episode_rewards = -np.inf
 best_test_mean_episode_accuracy = -np.inf
+
+
+class ECELoss(nn.Module):
+    """
+    Calculates the Expected Calibration Error of a model.
+    (This isn't necessary for temperature scaling, just a cool metric).
+    The input to this loss is the logits of a model, NOT the softmax scores.
+    This divides the confidence outputs into equally-sized interval bins.
+    In each bin, we compute the confidence gap:
+    bin_gap = | avg_confidence_in_bin - accuracy_in_bin |
+    We then return a weighted average of the gaps, based on the number
+    of samples in each bin
+    See: Naeini, Mahdi Pakdaman, Gregory F. Cooper, and Milos Hauskrecht.
+    "Obtaining Well Calibrated Probabilities Using Bayesian Binning." AAAI.
+    2015.
+    Code from: https://github.com/gpleiss/temperature_scaling/blob/master/temperature_scaling.py
+    """
+    def __init__(self, n_bins=15):
+        """
+        n_bins (int): number of confidence interval bins
+        """
+        super(ECELoss, self).__init__()
+        bin_boundaries = torch.linspace(0, 1, n_bins + 1)
+        self.bin_lowers = bin_boundaries[:-1]
+        self.bin_uppers = bin_boundaries[1:]
+
+    def forward(self, logits, labels):
+        softmaxes = F.softmax(logits, dim=1)
+        confidences, predictions = torch.max(softmaxes, 1)
+        accuracies = predictions.eq(labels)
+
+        ece = torch.zeros(1, device=logits.device)
+        for bin_lower, bin_upper in zip(self.bin_lowers, self.bin_uppers):
+            # Calculated |confidence - accuracy| in each bin
+            in_bin = confidences.gt(bin_lower.item()) * confidences.le(bin_upper.item())
+            prop_in_bin = in_bin.float().mean()
+            if prop_in_bin.item() > 0:
+                accuracy_in_bin = accuracies[in_bin].float().mean()
+                avg_confidence_in_bin = confidences[in_bin].mean()
+                ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
+
+        return ece
+
+
+class Logger:
+    
+    def __init__(self, save_path=None, backup_filenames=['main_basic.py', 'main_transfer.py', 'model.py', 'env.py', 'sac_multi.py', 'utils.py']):
+        self.save_path = save_path
+        self.file = None
+        if self.save_path is not None:
+            self.set_path(save_path=self.save_path)
+            
+        self.backup_filenames = backup_filenames
+            
+    def set_path(self, save_path=None, args=None):
+        if save_path is not None:
+            self.save_path = save_path
+        elif args is not None:
+            folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-").split(".")[0]
+            self.save_path = '/opt/workspace/host_storage_hdd/results/' + folder_name
+            self.save_path += "_" + args.from_dataset + "_to" if args.from_dataset != "" else ""
+            self.save_path += "_" + args.dataset
+            self.save_path += "_" + args.path_postfix if args.path_postfix != "" else ""
+        else:
+            raise AttributeError(errno.ENOENT, os.strerror(errno.ENOENT), "Either 'save_path' or 'args' must be set.")
+        
+        os.makedirs(self.save_path, exist_ok=True)
+    
+    def create_logdirs(self, args, save_self=True, save_config=True, save_args=True):
+        # create folder name and save_path
+        if self.save_path is None:
+            self.set_path(args=args)
+        
+        # save code
+        if save_self:
+            self.save_code()
+        
+        # save experiment config
+        if save_config:
+            shutil.copyfile(os.path.join(args.config_path, args.dataset.lower() + ".json"), os.path.join(self.save_path, args.dataset.lower() + ".json"))
+        
+        # save arguments
+        if save_args:
+            f = open(os.path.join(self.save_path, "args"), "w")
+            f.write(str(args).replace(", ", ",\n"))
+            f.close()
+            
+        return self.save_path
+    
+    def save_code(self):
+        filepath = os.path.join(self.save_path, 'code')
+        os.makedirs(filepath, exist_ok=True)
+        
+        for filename in self.backup_filenames:
+            shutil.copyfile(filename, os.path.join(filepath, filename))
+    
+    def print(self, *args, **kwargs):
+        if self.save_path is not None:
+            f = open(os.path.join(self.save_path, "log.log"), "a")
+            print(str(datetime.now()) + ":", *args, **kwargs, file=f)
+            f.close()
+            
+        print(str(datetime.now()) + ":", *args, **kwargs)
 
 
 def learn_callback(_locals, _globals, reward_lookback=20, test_interval=100, test_episodes=5):
@@ -37,17 +140,17 @@ def learn_callback(_locals, _globals, reward_lookback=20, test_interval=100, tes
             
         if mean_episode_rewards > best_train_mean_episode_rewards:
             best_train_mean_episode_rewards = mean_episode_rewards
-            _locals['sac_trainer'].save_model(_locals['log_path'] + 'best_by_train_sac_self_teaching')
+            _locals['sac_trainer'].save_model(os.path.join(_locals['logger'].save_path, 'best_by_train_sac_self_teaching'))
         
         if num_episodes % test_interval == 0:
-            mean_accuracies, std_accuracies, mean_actions, std_actions, mean_samples, std_samples = test(_locals['sac_trainer'], _locals['env'], n_episodes=test_episodes, scale=True)
+            mean_accuracies, std_accuracies, mean_actions, std_actions, mean_samples, std_samples = test(_locals['sac_trainer'], _locals['env'], _locals['logger'], n_episodes=test_episodes)
 
             if mean_accuracies[-1] > best_test_mean_episode_accuracy:
                 best_test_mean_episode_accuracy = mean_accuracies[-1]
-                _locals['sac_trainer'].save_model(_locals['log_path'] + 'best_by_test_sac_self_teaching')
+                _locals['sac_trainer'].save_model(os.path.join(_locals['logger'].save_path, 'best_by_test_sac_self_teaching'))
 
-                plot_actions(mean_actions, std_actions, label=str(num_episodes) + "_test", color="C5", filepath=_locals['log_path'])
-                plot([mean_accuracies], [std_accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.0, 1.0), filename=str(num_episodes) + "_test" + "_accuracy_%.4f" % (mean_accuracies[-1]), filepath=_locals['log_path'])
+                plot_actions(mean_actions, std_actions, label=str(num_episodes) + "_test", color="C5", filepath=_locals['logger'].save_path)
+                plot([mean_accuracies], [std_accuracies], labels=["n_episodes = " + str(num_episodes)], y_lim=(0.0, 1.0), filename=str(num_episodes) + "_test" + "_accuracy_%.4f" % (mean_accuracies[-1]), filepath=_locals['logger'].save_path)
             
             if 'writer' in _locals:
                 writer = _locals['writer']
@@ -57,7 +160,7 @@ def learn_callback(_locals, _globals, reward_lookback=20, test_interval=100, tes
     return True
 
 
-def test(model, env, n_episodes=10, override_action=False, scale=False, render=True, take_all_clusters=False):
+def test(model, env, logger=Logger(), n_episodes=10, override_action=False, render=True):
     rewards = []
     steps = []
     actions = []
@@ -88,7 +191,7 @@ def test(model, env, n_episodes=10, override_action=False, scale=False, render=T
             obs, reward, done, info = env.step(action)
             
             reward = reward.cpu().detach().numpy()
-            info['val_acc'] = info['val_acc'].cpu().detach().numpy()
+            info['acc'] = info['acc'].cpu().detach().numpy()
             
             action = np.array([info['true_action'][i].cpu().detach().numpy() for i in range(len(info['true_action']))])
             
@@ -96,23 +199,21 @@ def test(model, env, n_episodes=10, override_action=False, scale=False, render=T
             num_steps += 1
             
             if info['timestep'] < env.hyperparams['max_timesteps']:
-                return_accuracies[i, info['timestep']] = info['val_acc']
+                return_accuracies[i, info['timestep']] = info['acc']
             
             actions[-1].append(action.tolist())
             num_samples[-1].append(info['num_samples'].cpu().numpy() / len(env.X_unlabel))
                 
-        print(i, ": CUMULATIVE REWARD:", rewards_sum, "- NUM STEPS:", num_steps, "- VAL ACCURACY:", info['val_acc'])
+        logger.print(i, ": CUMULATIVE REWARD:", rewards_sum, "- NUM STEPS:", num_steps, "- " + ("TEST" if env.is_testing else "VAL") + " ACCURACY:", info['acc'])
         rewards.append(rewards_sum)
         steps.append(num_steps)
-        return_accuracies[i, -1] = info['val_acc']
+        return_accuracies[i, -1] = info['acc']
         
-    print("MEAN REWARD:", np.mean(rewards), "- MEAN STEPS:", np.mean(num_steps), "- MEAN ACCURACY:", np.mean(return_accuracies[:, -1]))
+    logger.print("MEAN REWARD:", np.mean(rewards), "- MEAN STEPS:", np.mean(num_steps), "- MEAN ACCURACY:", np.mean(return_accuracies[:, -1]))
     
     actions = np.array(actions)
     num_samples = np.array(num_samples)
-    if scale:
-        actions = (actions + 1) / 2
-    
+
     env.reset()
     return np.mean(return_accuracies, axis=0), np.std(return_accuracies, axis=0), np.mean(actions, axis=0), np.std(actions, axis=0), np.mean(num_samples, axis=0), np.std(num_samples, axis=0)
 
@@ -126,7 +227,7 @@ def plot(mean_arr, std_arr, labels, y_lim=(0.0, 1.0), filename='RL_results', fil
     plt.legend()
     plt.ylim(y_lim)
     if filepath is not None:
-        plt.savefig(filepath + filename + '.svg')
+        plt.savefig(os.path.join(filepath, filename + '.svg'))
 
 
 def plot_actions(mean_actions, std_actions, label, color, filepath=None, y_lim=(0.0, 1.0)):
@@ -137,7 +238,7 @@ def plot_actions(mean_actions, std_actions, label, color, filepath=None, y_lim=(
 
     plt.ylim(y_lim)
     if filepath is not None:
-        plt.savefig(filepath + label.replace(" ", "_") + "_actions" + ".svg")
+        plt.savefig(os.path.join(filepath, label.replace(" ", "_") + "_actions" + ".svg"))
 
 
 def plot_confusion_matrix(matrix, filepath=None):
@@ -150,36 +251,62 @@ def plot_confusion_matrix(matrix, filepath=None):
         plt.savefig(os.path.join(filepath, "confusion_matrix.svg"))
 
 
-def test_pipeline(env, trainer, model_path=None, save=True):
+def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_labeled=True, all_samples=True, manual_thresholds=True, labeled_samples=True, trained_model=True):
+    env.is_testing = True
     action_dim = env.action_space.shape[0]
     state_dim  = env.observation_space.shape[0]
     
     mean_accs, std_accs = [], []
+    labels = []
 
     if model_path is not None:
-        trainer.load_model(model_path + 'best_by_test_sac_self_teaching')
+        trainer.load_model(os.path.join(model_path, 'best_by_test_sac_self_teaching'))
     trainer.to_cuda()
     
-    mean_acc, std_acc, _, _, _, _ = test(trainer, env, override_action=[[0.0, 1.0]], n_episodes=10)
-    mean_accs.append(mean_acc)
-    std_accs.append(std_acc)
-    
-    mean_acc, std_acc, _, _, _, _ = test(trainer, env, override_action=[[0.982, -7.0/9.0]], n_episodes=30)
-    mean_accs.append(mean_acc)
-    std_accs.append(std_acc)
+    if all_samples_labeled:
+        env.known_labels = True
+        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=[[0.0, 1.0]], n_episodes=10)
+        mean_accs.append(mean_acc)
+        std_accs.append(std_acc)
+        labels.append("all samples - labeled")
+        env.known_labels = False
 
-    mean_acc, std_acc, _, _, _, _ = test(trainer, env, override_action=True, n_episodes=10)
-    mean_accs.append(mean_acc)
-    std_accs.append(std_acc)
+    if all_samples:
+        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=[[0.0, 1.0]], n_episodes=10)
+        mean_accs.append(mean_acc)
+        std_accs.append(std_acc)
+        labels.append("all samples - labeled & unlabeled")
+        
+    if manual_thresholds:
+        if isinstance(manual_thresholds, list):
+            override_action = manual_thresholds
+        else:
+            override_action = [[0.982, -7.0/9.0]]
+            
+        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=override_action, n_episodes=30)
+        mean_accs.append(mean_acc)
+        std_accs.append(std_acc)
+        labels.append("manually set thresholds")
+
+    if labeled_samples:
+        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=True, n_episodes=10)
+        mean_accs.append(mean_acc)
+        std_accs.append(std_acc)
+        labels.append("label only baseline")
     
-    mean_acc, std_acc, mean_actions, std_actions, mean_samples, std_samples = test(trainer, env, n_episodes=30)
-    mean_accs.append(mean_acc)
-    std_accs.append(std_acc)
+    if trained_model:
+        mean_acc, std_acc, mean_actions, std_actions, mean_samples, std_samples = test(trainer, env, logger, n_episodes=30)
+        mean_accs.append(mean_acc)
+        std_accs.append(std_acc)
+        labels.append("RL trained - test")
+    else:
+        mean_actions, std_action, mean_samples, std_samples = None, None, None, None
     
-    if save:
-        plot_actions(mean_actions, std_actions, label="test", color="C5", filepath=model_path)
-        plot([mean_samples], [std_samples], labels=["num selected samples"], y_lim=(0, 1), filename='test_samples', filepath=model_path)
-        plot(mean_accs, std_accs, labels=["all samples", "manually set thresholds", "label only baseline", "RL trained - test"], y_lim=(0.0, 1.0), filename="test_curves", filepath=model_path)
+    if logger.save_path and any([all_samples, manual_thresholds, labeled_samples, trained_model]):
+        if trained_model:
+            plot_actions(mean_actions, std_actions, label="test", color="C5", filepath=logger.save_path)
+            plot([mean_samples], [std_samples], labels=["num selected samples"], y_lim=(0, 1), filename='test_samples', filepath=logger.save_path)
+        plot(mean_accs, std_accs, labels=labels, y_lim=(0.0, 1.0), filename="test_curves", filepath=logger.save_path)
         
     obs = env.reset()
     model = env.model
@@ -190,20 +317,17 @@ def test_pipeline(env, trainer, model_path=None, save=True):
             break
     
     y_pred = model.predict(env.X_test, batch_size=env.hyperparams['pred_batch_size']).cpu().detach()
-    cm = confusion_matrix(env.y_test.cpu().detach(), torch.argmax(y_pred, axis=1))   
+    cm = confusion_matrix(env.y_test.cpu().detach(), torch.argmax(y_pred, axis=1))
     
-    if save:
-        filepath = "." if model_path is None else model_path
+    if logger.save_path:
+        filepath = "." if logger.save_path is None else logger.save_path
         plot_confusion_matrix(cm, filepath)
-
-
-def save_self(filepath):
-    filepath = filepath + 'code/'
-    os.makedirs(filepath, exist_ok=True)
-    filenames = ['main_basic.py', 'main_transfer.py', 'model.py', 'env.py', 'sac_multi.py', 'utils.py']
-    
-    for filename in filenames:
-        shutil.copyfile(filename, filepath + filename)
+        
+        # also save all the results to be pickable.
+        pickle.dump({"mean_accs": mean_accs, "std_accs": std_accs, "labels": labels, "mean_actions": mean_actions, "std_actions": std_actions, "mean_samples": mean_samples, "std_samples": std_samples, "confusion_matrix": confusion_matrix}, 
+                    open(os.path.join(logger.save_path, "test_results.pkl"), "wb"))
+        
+    env.is_testing = False
 
 
 def imdb_preprocessing(path, loader_fn, text, target, train=True, emb_dim=100, max_sample_len=1000, load=True):
@@ -297,45 +421,3 @@ def text_dataset_loader(path, dataset_key, train=True, emb_dim=100, max_sample_l
             pickle.dump(vocab.vectors, open(os.path.join(path, "embed_vectors_" + str(max_sample_len) + "_" + str(emb_dim) + ".pkl"), "wb"))
         
         return TextDataset(X, y)
-
-
-class ECELoss(nn.Module):
-    """
-    Calculates the Expected Calibration Error of a model.
-    (This isn't necessary for temperature scaling, just a cool metric).
-    The input to this loss is the logits of a model, NOT the softmax scores.
-    This divides the confidence outputs into equally-sized interval bins.
-    In each bin, we compute the confidence gap:
-    bin_gap = | avg_confidence_in_bin - accuracy_in_bin |
-    We then return a weighted average of the gaps, based on the number
-    of samples in each bin
-    See: Naeini, Mahdi Pakdaman, Gregory F. Cooper, and Milos Hauskrecht.
-    "Obtaining Well Calibrated Probabilities Using Bayesian Binning." AAAI.
-    2015.
-    Code from: https://github.com/gpleiss/temperature_scaling/blob/master/temperature_scaling.py
-    """
-    def __init__(self, n_bins=15):
-        """
-        n_bins (int): number of confidence interval bins
-        """
-        super(ECELoss, self).__init__()
-        bin_boundaries = torch.linspace(0, 1, n_bins + 1)
-        self.bin_lowers = bin_boundaries[:-1]
-        self.bin_uppers = bin_boundaries[1:]
-
-    def forward(self, logits, labels):
-        softmaxes = F.softmax(logits, dim=1)
-        confidences, predictions = torch.max(softmaxes, 1)
-        accuracies = predictions.eq(labels)
-
-        ece = torch.zeros(1, device=logits.device)
-        for bin_lower, bin_upper in zip(self.bin_lowers, self.bin_uppers):
-            # Calculated |confidence - accuracy| in each bin
-            in_bin = confidences.gt(bin_lower.item()) * confidences.le(bin_upper.item())
-            prop_in_bin = in_bin.float().mean()
-            if prop_in_bin.item() > 0:
-                accuracy_in_bin = accuracies[in_bin].float().mean()
-                avg_confidence_in_bin = confidences[in_bin].mean()
-                ece += torch.abs(avg_confidence_in_bin - accuracy_in_bin) * prop_in_bin
-
-        return ece

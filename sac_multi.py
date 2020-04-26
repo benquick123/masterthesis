@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from torch.utils.tensorboard import SummaryWriter
 
 from model import ValueNetwork, PolicyNetwork, SoftQNetwork, Alpha
+from utils import Logger
 
 
 class SharedAdam(optim.Optimizer):
@@ -131,9 +132,11 @@ class ReplayBuffer:
 
 
 class SAC_Trainer():
-    def __init__(self, replay_buffer, state_dim, action_dim, hidden_layer_sizes=[64, 64], action_range=1., q_lr=3e-4, pi_lr=3e-4, alpha_lr=3e-4, v_lr=3e-4):
+    def __init__(self, replay_buffer, state_dim, action_dim, logger, hidden_layer_sizes=[64, 64], action_range=1., q_lr=3e-4, pi_lr=3e-4, alpha_lr=3e-4, v_lr=3e-4):
         self.replay_buffer = replay_buffer
         self.action_dim = action_dim
+        self.state_dim = state_dim
+        self.logger = logger
 
         self.q_net_1 = SoftQNetwork(state_dim, action_dim, hidden_layer_sizes)
         self.q_net_2 = SoftQNetwork(state_dim, action_dim, hidden_layer_sizes)
@@ -247,9 +250,9 @@ class SAC_Trainer():
             self.target_value_net.eval()
 
 
-def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps, batch_size=64, learning_starts=100, n_warmup=100, n_updates=1, linear_lr_scheduler=None, callback=None, callback_kwargs={}, log_path=None, DETERMINISTIC=False):
-    if log_path is not None:
-        writer = SummaryWriter(log_dir=log_path + "WORKER_" + str(worker_id))
+def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps, logger=Logger(), batch_size=64, learning_starts=100, n_warmup=100, start_step=0, n_updates=1, linear_lr_scheduler=None, callback=None, callback_kwargs={}, DETERMINISTIC=False):
+    if logger.save_path is not None:
+        writer = SummaryWriter(log_dir=os.path.join(logger.save_path, "WORKER_" + str(worker_id)))
         writer.add_scalar("Rewards/episodeReward", 0, 0)
         writer.add_scalar('Actions/meanTestActions', 0, 0)
         writer.add_scalar('Accuracies/testAccuracies', 0, 0)
@@ -274,7 +277,7 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
         env = env_fn(**env_kwargs)
         obs = env.reset()
         
-        for step in range(num_steps):
+        for step in range(start_step, num_steps):
             if callback is not None:
                 callback(locals(), globals(), **callback_kwargs)
             
@@ -296,7 +299,7 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
                 rewards.append(episode_reward.cpu().detach().numpy())
                 if writer is not None:
                     writer.add_scalar('Rewards/episodeReward', episode_reward, step)
-                    writer.add_scalar('Accuracies/trainAccuracies', info['val_acc'], step)
+                    writer.add_scalar('Accuracies/trainAccuracies', info['acc'], step)
                 
                 episode_reward = 0
                 n_episode_steps = 0
@@ -325,7 +328,7 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
                 writer.add_scalar('Misc/numSelectedSamples', info['num_samples'].cpu().numpy(), step)
                 
         if worker_id == 0:
-            sac_trainer.save_model(log_path + 'final_sac_self_teaching')
+            sac_trainer.save_model(os.path.join(logger.save_path, 'final_sac_self_teaching'))
                     
         return sac_trainer
 
