@@ -181,9 +181,6 @@ class SelfTeachingBaseEnv(gym.Env):
             return torch.mean(self.reward_history) >= self.hyperparams['reward_history_threshold']
             
     def _get_alpha(self, step):
-        if self.known_labels:
-            return 1.0
-        
         if step <= 100:
             return 0.0
         elif 100 < step < 300:
@@ -199,24 +196,11 @@ class SelfTeachingBaseEnv(gym.Env):
         self.last_action = [action[0] - action[1], action[0] + action[1]]
         
         tau1, tau2 = self.last_action[0], self.last_action[1]
-
         assert tau1 <= tau2
         
         y_unlabel_estimates_max, y_unlabel_estimates_argmax = torch.max(self.y_unlabel_estimates, axis=1)
         y_unlabel_estimates_indices = (y_unlabel_estimates_max >= tau1) & (y_unlabel_estimates_max <= tau2)
         self.len_selected_samples = y_unlabel_estimates_indices.sum().double()
-            
-        """
-            y_pred_binary = torch.zeros(self.last_y_unlabel_pred.shape, dtype=torch.long).scatter_(1, y_unlabel_estimates_argmax.view((-1, 1)), 1.0).cuda(self.hyperparams['gpu_id'])
-            self.model.fit(torch.cat((self.X_train, self.X_unlabel[y_unlabel_estimates_indices]), axis=0),
-                            torch.cat((self.y_train, y_unlabel_estimates_argmax[y_unlabel_estimates_indices]), axis=0),
-                            optimizer=self.model_optimizer,
-                            loss_fn=self.model_loss,
-                            epochs=self.hyperparams['epochs_per_step'], 
-                            batch_size=self.hyperparams['batch_size'], 
-                            verbose=0,
-                            gpu_id=self.hyperparams['gpu_id'])
-        """
         
         self.model.fit_semi(self.X_train, self.y_train, 
                             self.X_unlabel[y_unlabel_estimates_indices], 
@@ -256,8 +240,12 @@ class SelfTeachingBaseEnv(gym.Env):
    
         self.timestep += 1
         terminal = True if self.timestep >= self.hyperparams['max_timesteps'] or not self._significant(self.last_reward) else False
+        info = {'acc': self.last_val_accuracy if not self.is_testing else self.last_test_accuracy, 
+                'timestep': self.timestep, 
+                'num_samples': self.len_selected_samples, 
+                'true_action': self.last_action}
         
-        return self.last_state, self.last_reward, terminal, { 'acc': self.last_val_accuracy if not self.is_testing else self.last_test_accuracy, 'timestep': self.timestep, 'num_samples': self.len_selected_samples, "true_action": self.last_action }
+        return self.last_state, self.last_reward, terminal, info
     
     def reset(self):
         self._initialize_model()

@@ -1,7 +1,7 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-gpu_num = '0,1,2'
+gpu_num = '2'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
 import errno
@@ -57,7 +57,7 @@ if __name__ == '__main__':
     # transfer
     transfer_group = parser.add_argument_group("transfer")
     transfer_group.add_argument("--from-dataset", type=str, default="", action="store", help="Dataset name to transfer from.")
-    transfer_group.add_argument("--pretrained-path", type=str, default="", action="store", help="In test mode, model from this path is loaded.")
+    transfer_group.add_argument("--pretrained-path", type=str, default="", action="store", help="In test mode, model from this path is loaded. In train mode, this path is used to train the model from.")
     transfer_group.add_argument("--load-buffer", action="store_true", help="Whether to load 'replay_buffer' from pretrained-path. Only has effect when --test is False and --pretrained-path is specified.")
     transfer_group.add_argument("--load-model", action="store_true", help="Whether to load agent's weights from pretrained-path. Only has effect when --test is False and --pretrained-path is specified.")
     
@@ -110,7 +110,7 @@ if __name__ == '__main__':
             logger.print("Overwriting old results.")
             
         env_kwargs['override_hyperparams']['reward_history_threshold'] = -10.0
-        test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path)
+        test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, all_samples=False, manual_thresholds=False, labeled_samples=False, all_samples_labeled=True, trained_model=False)
 
     else:
         env.close()

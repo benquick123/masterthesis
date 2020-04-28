@@ -174,6 +174,7 @@ def test(model, env, logger=Logger(), n_episodes=10, override_action=False, rend
         num_steps = 0
         actions.append([])
         num_samples.append([])
+        
         while not done:
             if render:
                 env.render()
@@ -186,8 +187,6 @@ def test(model, env, logger=Logger(), n_episodes=10, override_action=False, rend
             else:
                 action = model.policy_net.get_action(obs, deterministic=True)
                     
-            # env does not adhere do OpenAI spec anymore.
-            # next_obs, obs, reward, done, info = env.step(action)
             obs, reward, done, info = env.step(action)
             
             reward = reward.cpu().detach().numpy()
@@ -265,11 +264,17 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
     
     if all_samples_labeled:
         env.known_labels = True
+        tmp_alpha_lambda = env.hyperparams['unlabel_alpha']
+        env.hyperparams['unlabel_alpha'] = lambda step : 1.0
+        
         mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=[[0.0, 1.0]], n_episodes=10)
         mean_accs.append(mean_acc)
         std_accs.append(std_acc)
         labels.append("all samples - labeled")
+        
         env.known_labels = False
+        env.hyperparams['unlabel_alpha'] = tmp_alpha_lambda
+        logger.print("Sanity check: unlabel_alpha = ", env.hyperparams['unlabel_alpha'](0))
 
     if all_samples:
         mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=[[0.0, 1.0]], n_episodes=10)
@@ -300,7 +305,7 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
         std_accs.append(std_acc)
         labels.append("RL trained - test")
     else:
-        mean_actions, std_action, mean_samples, std_samples = None, None, None, None
+        mean_actions, std_actions, mean_samples, std_samples = None, None, None, None
     
     if logger.save_path and any([all_samples, manual_thresholds, labeled_samples, trained_model]):
         if trained_model:
