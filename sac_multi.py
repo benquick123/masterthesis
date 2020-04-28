@@ -228,19 +228,51 @@ class SAC_Trainer():
             for param_group in optimizer.param_groups:
                 param_group['lr'] = new_lr
         
-    def save_model(self, path):
-        torch.save(self.q_net_1.state_dict(), path + '_q1')
-        torch.save(self.q_net_2.state_dict(), path + '_q2')
-        torch.save(self.policy_net.state_dict(), path + '_policy')
-        torch.save(self.value_net.state_dict(), path + '_value')
-        torch.save(self.target_value_net.state_dict(), path + '_target_value')
+    def save_model(self, path, old_mode=False):
+        if old_mode:
+            torch.save(self.q_net_1.state_dict(), path + '_q1')
+            torch.save(self.q_net_2.state_dict(), path + '_q2')
+            torch.save(self.policy_net.state_dict(), path + '_policy')
+            torch.save(self.value_net.state_dict(), path + '_value')
+            torch.save(self.target_value_net.state_dict(), path + '_target_value')
+        else:
+            torch.save({
+                "alpha_model": self.log_alpha.state_dict(),
+                "alpha_optimizer": self.alpha_optimizer.state_dict(),
+                "policy_model": self.policy_net.state_dict(),
+                "policy_optimizer": self.policy_optimizer.state_dict(),
+                "value_model": self.value_net.state_dict(),
+                "value_optimizer": self.v_optimizer.state_dict(),
+                "target_value_model": self.value_net.state_dict(),
+                "q1_model": self.q_net_1.state_dict(),
+                "q1_optimizer": self.q_optimizer_1.state_dict(),
+                "q2_model": self.q_net_2.state_dict(),
+                "q2_optimizer": self.q_optimizer_2.state_dict()
+            }, path + ".tar")
 
-    def load_model(self, path, evaluation=False, gpu_id=0):
-        self.q_net_1.load_state_dict(torch.load(path + '_q1'))
-        self.q_net_2.load_state_dict(torch.load(path + '_q2'))
-        self.policy_net.load_state_dict(torch.load(path + '_policy'))
-        self.value_net.load_state_dict(torch.load(path + '_value'))
-        self.target_value_net.load_state_dict(torch.load(path + '_target_value'))
+    def load_model(self, path, evaluation=False, gpu_id=0, old_mode=False):
+        if old_mode:
+            self.q_net_1.load_state_dict(torch.load(path + '_q1'))
+            self.q_net_2.load_state_dict(torch.load(path + '_q2'))
+            self.policy_net.load_state_dict(torch.load(path + '_policy'))
+            self.value_net.load_state_dict(torch.load(path + '_value'))
+            self.target_value_net.load_state_dict(torch.load(path + '_target_value'))
+        else:
+            try:
+                checkpoint = torch.load(path + ".tar")
+                self.log_alpha.load_state_dict(checkpoint['alpha_model'])
+                self.alpha_optimizer.load_state_dict(checkpoint['alpha_optimizer'])
+                self.policy_net.load_state_dict(checkpoint['policy_model'])
+                self.policy_optimizer.load_state_dict(checkpoint['policy_optimizer'])
+                self.value_net.load_state_dict(checkpoint['value_model'])
+                self.v_optimizer.load_state_dict(checkpoint['value_optimizer'])
+                self.target_value_net.load_state_dict(checkpoint['target_value_model'])
+                self.q_net_1.load_state_dict(checkpoint['q1_model'])
+                self.q_optimizer_1.load_state_dict(checkpoint['q1_optimizer'])
+                self.q_net_2.load_state_dict(checkpoint['q2_model'])
+                self.q_optimizer_2.load_state_dict(checkpoint['q2_optimizer'])
+            except FileNotFoundError:
+                self.load_model(path, evaluation, gpu_id, old_mode=True)
 
         if evaluation:
             self.q_net_1.eval()

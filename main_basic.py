@@ -1,7 +1,7 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-gpu_num = '0'
+gpu_num = '0,1,2'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
 import errno
