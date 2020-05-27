@@ -1,0 +1,14 @@
+{
+    "name": "MNIST",
+    "loader_fn": "torchvision.datasets.MNIST",
+    "train_size": 500,
+    "val_size": 1500,
+    "max_timesteps": 300,
+    "model_init_fn": "model.DenseModel",
+    "model_kwargs": {
+        "layer_sizes": [256, 128]
+    },
+    "batch_size": 128,
+    "pred_batch_size": 4096,
+    "unlabel_alpha": 0.1
+}

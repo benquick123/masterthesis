@@ -111,7 +111,7 @@ class ReplayBuffer:
         if len(self.buffer) < self.capacity:
             self.buffer.append(None)
         self.buffer[self.position] = (state, action, reward, next_state, done, hash_str)
-        self.position = int((self.position + 1) % self.capacity)
+        self.position = (self.position + 1) % self.capacity
 
     def sample(self, batch_size):
         batch = random.sample(self.buffer, batch_size)
@@ -124,14 +124,32 @@ class ReplayBuffer:
     def get_length(self):
         return len(self.buffer)
     
-    def save_buffer(self, filepath):
+    def save(self, filepath):
         pickle.dump((self.buffer, self.position), open(os.path.join(filepath, "replay_buffer.pkl"), "wb"))
         
-    def load_buffer(self, filepath):
+    def load(self, filepath):
         self.buffer, self.position = pickle.load(open(os.path.join(filepath, "replay_buffer.pkl"), "rb"))
+        self.capacity = len(self.buffer)
+        
+    def resize(self, new_capacity, keep_recent=True):
+        if new_capacity < self.capacity:
+            if not keep_recent:
+                random.shuffle(self.buffer)
+            self.partial_delete_buffer(self.capacity - new_capacity)
+            
+        self.capacity = new_capacity
+        
+    def partial_delete(self, n_delete):
+        curr_index = self.position + 1
+        for _ in range(n_delete):
+            if curr_index >= len(self.buffer):
+                curr_index = 0
+            del self.buffer[curr_index]
+        self.capacity = len(self.buffer)
 
 
 class SAC_Trainer():
+    
     def __init__(self, replay_buffer, state_dim, action_dim, logger, hidden_layer_sizes=[64, 64], action_range=1., q_lr=3e-4, pi_lr=3e-4, alpha_lr=3e-4, v_lr=3e-4):
         self.replay_buffer = replay_buffer
         self.action_dim = action_dim
@@ -228,8 +246,8 @@ class SAC_Trainer():
             for param_group in optimizer.param_groups:
                 param_group['lr'] = new_lr
         
-    def save_model(self, path, old_mode=False):
-        if old_mode:
+    def save_model(self, path, legacy_mode=False):
+        if legacy_mode:
             torch.save(self.q_net_1.state_dict(), path + '_q1')
             torch.save(self.q_net_2.state_dict(), path + '_q2')
             torch.save(self.policy_net.state_dict(), path + '_policy')
@@ -250,8 +268,8 @@ class SAC_Trainer():
                 "q2_optimizer": self.q_optimizer_2.state_dict()
             }, path + ".tar")
 
-    def load_model(self, path, evaluation=False, gpu_id=0, old_mode=False):
-        if old_mode:
+    def load_model(self, path, evaluation=False, gpu_id=0, legacy_mode=False):
+        if legacy_mode:
             self.q_net_1.load_state_dict(torch.load(path + '_q1'))
             self.q_net_2.load_state_dict(torch.load(path + '_q2'))
             self.policy_net.load_state_dict(torch.load(path + '_policy'))
@@ -272,7 +290,7 @@ class SAC_Trainer():
                 self.q_net_2.load_state_dict(checkpoint['q2_model'])
                 self.q_optimizer_2.load_state_dict(checkpoint['q2_optimizer'])
             except FileNotFoundError:
-                self.load_model(path, evaluation, gpu_id, old_mode=True)
+                self.load_model(path, evaluation, gpu_id, legacy_mode=True)
 
         if evaluation:
             self.q_net_1.eval()
@@ -361,7 +379,10 @@ def worker(worker_id, sac_trainer, env_fn, env_kwargs, replay_buffer, num_steps,
                 
         if worker_id == 0:
             sac_trainer.save_model(os.path.join(logger.save_path, 'final_sac_self_teaching'))
-                    
+        
+        if writer:
+            writer.close()
+            
         return sac_trainer
 
 

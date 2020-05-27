@@ -117,8 +117,8 @@ class SelfTeachingBaseEnv(gym.Env):
             self.X_train = self.X_train / 255
             self.X_test = self.X_test / 255
         
-        self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(self.X_train, self.y_train, test_size=self.hyperparams['val_size'], random_state=0)
-        self.X_train, self.X_unlabel, self.y_train, self.y_unlabel = train_test_split(self.X_train, self.y_train, train_size=self.hyperparams['train_size'], random_state=0)
+        self.X_train, self.X_val, self.y_train, self.y_val = train_test_split(self.X_train, self.y_train, test_size=self.hyperparams['val_size'], random_state=self.hyperparams['random_seed'])
+        self.X_train, self.X_unlabel, self.y_train, self.y_unlabel = train_test_split(self.X_train, self.y_train, train_size=self.hyperparams['train_size'], random_state=self.hyperparams['random_seed'])
         
         self.X_train = torch.tensor(self.X_train).cuda(self.hyperparams['gpu_id'])
         self.y_train = torch.tensor(self.y_train, dtype=torch.long).cuda(self.hyperparams['gpu_id'])
@@ -204,7 +204,7 @@ class SelfTeachingBaseEnv(gym.Env):
         
         self.model.fit_semi(self.X_train, self.y_train, 
                             self.X_unlabel[y_unlabel_estimates_indices], 
-                            y_unlabel_estimates_argmax[y_unlabel_estimates_indices] if not self.known_labels else self.y_unlabel,
+                            y_unlabel_estimates_argmax[y_unlabel_estimates_indices] if not self.known_labels else self.y_unlabel[y_unlabel_estimates_indices],
                             optimizer=self.model_optimizer,
                             loss_fn=self.model_loss,
                             epochs=self.hyperparams['epochs_per_step'], 

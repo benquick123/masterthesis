@@ -19,5 +19,6 @@
     },
     "dataset_data": "data",
     "dataset_labels": "targets",
-    "output_state_dim": null
+    "output_state_dim": null,
+    "random_seed": null
 }

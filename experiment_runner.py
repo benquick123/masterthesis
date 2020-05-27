@@ -3,7 +3,7 @@ import time
 
 
 if __name__ == '__main__':
-    args = [
+    """args = [
         # ("ag_news", 9),
         # ("cifar10", 6),
         ("dbpedia", 6),
@@ -12,6 +12,12 @@ if __name__ == '__main__':
         ("mnist", 18),
         ("svhn", 12),
         ("usps", 18)
+    ]"""
+    args = [
+        ("mnist", 3),
+        ("mnist", 3),
+        ("mnist", 3),
+        ("mnist", 3)
     ]
     
     for dataset, num_workers in args:

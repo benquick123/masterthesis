@@ -81,7 +81,7 @@ class Logger:
             self.save_path = save_path
         elif args is not None:
             folder_name = str(datetime.now()).replace(" ", "_").replace(":", "-").split(".")[0]
-            self.save_path = '/opt/workspace/host_storage_hdd/results/' + folder_name
+            self.save_path = os.path.join(args.results_folder, folder_name)
             self.save_path += "_" + args.from_dataset + "_to" if args.from_dataset != "" else ""
             self.save_path += "_" + args.dataset
             self.save_path += "_" + args.path_postfix if args.path_postfix != "" else ""
@@ -143,8 +143,8 @@ def learn_callback(_locals, _globals, reward_lookback=20, test_interval=100, tes
             _locals['sac_trainer'].save_model(os.path.join(_locals['logger'].save_path, 'best_by_train_sac_self_teaching'))
         
         if num_episodes % test_interval == 0:
-            mean_accuracies, std_accuracies, mean_actions, std_actions, mean_samples, std_samples = test(_locals['sac_trainer'], _locals['env'], _locals['logger'], n_episodes=test_episodes)
-
+            mean_accuracies, std_accuracies, mean_actions, std_actions, _, _ = test(_locals['sac_trainer'], _locals['env'], _locals['logger'], n_episodes=test_episodes)
+            
             if mean_accuracies[-1] > best_test_mean_episode_accuracy:
                 best_test_mean_episode_accuracy = mean_accuracies[-1]
                 _locals['sac_trainer'].save_model(os.path.join(_locals['logger'].save_path, 'best_by_test_sac_self_teaching'))
@@ -263,6 +263,7 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
     trainer.to_cuda()
     
     if all_samples_labeled:
+        logger.print("all samples - labeled")
         env.known_labels = True
         tmp_alpha_lambda = env.hyperparams['unlabel_alpha']
         env.hyperparams['unlabel_alpha'] = lambda step : 1.0
@@ -274,15 +275,17 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
         
         env.known_labels = False
         env.hyperparams['unlabel_alpha'] = tmp_alpha_lambda
-        logger.print("Sanity check: unlabel_alpha = ", env.hyperparams['unlabel_alpha'](0))
+        logger.print("Sanity check: unlabel_alpha =", env.hyperparams['unlabel_alpha'](0))
 
     if all_samples:
+        logger.print("all samples - labeled & unlabeled")
         mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=[[0.0, 1.0]], n_episodes=10)
         mean_accs.append(mean_acc)
         std_accs.append(std_acc)
         labels.append("all samples - labeled & unlabeled")
         
     if manual_thresholds:
+        logger.print("manually set thresholds")
         if isinstance(manual_thresholds, list):
             override_action = manual_thresholds
         else:
@@ -294,12 +297,14 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
         labels.append("manually set thresholds")
 
     if labeled_samples:
+        logger.print("label only baseline")
         mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=True, n_episodes=10)
         mean_accs.append(mean_acc)
         std_accs.append(std_acc)
         labels.append("label only baseline")
     
     if trained_model:
+        logger.print("RL trained - test")
         mean_acc, std_acc, mean_actions, std_actions, mean_samples, std_samples = test(trainer, env, logger, n_episodes=30)
         mean_accs.append(mean_acc)
         std_accs.append(std_acc)
@@ -315,7 +320,7 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
         
     obs = env.reset()
     model = env.model
-    for i in range(env.hyperparams['max_timesteps']):
+    for _ in range(env.hyperparams['max_timesteps']):
         a = trainer.policy_net.get_action(obs, deterministic=True)
         obs, _, done, _ = env.step(a)
         if done:

@@ -1,7 +1,7 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-gpu_num = '2'
+gpu_num = '0'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
 import errno
@@ -36,15 +36,18 @@ if __name__ == '__main__':
     general_group.add_argument("--num-workers", type=int, default=1, action="store", help="Number of workers to initialize and run the experiments with.")
     general_group.add_argument("--path-postfix", type=str, default="", action="store", help="Path postfix that is added to the logging folder.")
     general_group.add_argument("--config-path", type=str, default="./config", action="store", help="Folder containing config file.")
+    general_group.add_argument("--results-folder", type=str, default="/opt/workspace/host_storage_hdd/results", action="store", help="Folder used as base when creating a results directory.")
+    general_group.add_argument("--random-seed", type=int, default=np.random.randint(100000), action="store", help="Random seed used for experiment initalization.")
     
     # testing
     testing_group = parser.add_argument_group("testing")
     testing_group.add_argument("--test", action="store_true", help="Run in test mode?")
     testing_group.add_argument("--new-folder", action="store_true", help="Whether to create new folder when running. Only has an effect when testing.")
+    testing_group.add_argument("--manual-thresholds", type=float, nargs="+", default=False, action="store", help="Optional manual thresholds to use during testing.")
     
     # training
     training_group = parser.add_argument_group("training")
-    training_group.add_argument("--agent-rl", type=float, default=5e-5, action="store", help="SAC agent learning rate.")
+    training_group.add_argument("--agent-lr", type=float, default=5e-5, action="store", help="SAC agent learning rate.")
     training_group.add_argument("--batch-size", type=int, default=16, action="store", help="Batch size for SAC trainer.")
     training_group.add_argument("--buffer-size", type=int, default=200000, action="store", help="Size of the replay buffer.")
     training_group.add_argument("--rl-hidden-layer-sizes", type=int, nargs="+", default=[128, 128], help="Sizes of hidden layers.")
@@ -52,12 +55,13 @@ if __name__ == '__main__':
     training_group.add_argument("--n-warmup", type=int, default=20000, action="store", help="Number of timesteps before agent's actions are used. Random actions are used before that. Divided by args.num_workers when multiprocessing is enabled.")
     training_group.add_argument("--learning-starts", type=int, default=20000, action="store", help="Number of timesteps before RL agents starts training. Divided by args.num_workers when multiprocessing is enabled.")
     training_group.add_argument("--start-step", type=int, default=0, action="store", help="At which step to start training. Useful when learning from pretrained.")
-    training_group.add_argument("--test-interval", type=int, default=70, action="store", help="RL agent test interval. Divided by args.num_workers when multiprocessing is enabled.")
+    training_group.add_argument("--test-interval", type=int, default=50, action="store", help="RL agent test interval. Number specifies Divided by args.num_workers when multiprocessing is enabled.")
     
     # transfer
     transfer_group = parser.add_argument_group("transfer")
     transfer_group.add_argument("--from-dataset", type=str, default="", action="store", help="Dataset name to transfer from.")
     transfer_group.add_argument("--pretrained-path", type=str, default="", action="store", help="In test mode, model from this path is loaded. In train mode, this path is used to train the model from.")
+    transfer_group.add_argument("--num-buffer-delete", type=int, default=0, action="store", help="Specifies how many experience points should be deleted, when loading from pretrained-path.")
     transfer_group.add_argument("--load-buffer", action="store_true", help="Whether to load 'replay_buffer' from pretrained-path. Only has effect when --test is False and --pretrained-path is specified.")
     transfer_group.add_argument("--load-model", action="store_true", help="Whether to load agent's weights from pretrained-path. Only has effect when --test is False and --pretrained-path is specified.")
     
@@ -75,13 +79,15 @@ if __name__ == '__main__':
     manager = BaseManager()
     manager.start()
     replay_buffer = manager.ReplayBuffer(args.buffer_size)
-    
+        
     logger = Logger()
     
     env_kwargs = {"logger": logger,
                   "config_path": args.config_path,
                   "dataset": args.dataset, 
-                  "override_hyperparams": dict()
+                  "override_hyperparams": {
+                      "random_seed": args.random_seed
+                  }
                   }
     
     if args.from_dataset != "":
@@ -94,7 +100,7 @@ if __name__ == '__main__':
     action_dim = env.action_space.shape[0]
     state_dim  = env.observation_space.shape[0]
 
-    sac_trainer = SAC_Trainer(replay_buffer, state_dim, action_dim, logger, hidden_layer_sizes=args.rl_hidden_layer_sizes, q_lr=args.agent_rl, pi_lr=args.agent_rl, alpha_lr=args.agent_rl, v_lr=args.agent_rl)
+    sac_trainer = SAC_Trainer(replay_buffer, state_dim, action_dim, logger, hidden_layer_sizes=args.rl_hidden_layer_sizes, q_lr=args.agent_lr, pi_lr=args.agent_lr, alpha_lr=args.agent_lr, v_lr=args.agent_lr)
     
     if args.test:
         if args.pretrained_path == "":
@@ -110,7 +116,8 @@ if __name__ == '__main__':
             logger.print("Overwriting old results.")
             
         env_kwargs['override_hyperparams']['reward_history_threshold'] = -10.0
-        test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, all_samples=False, manual_thresholds=False, labeled_samples=False, all_samples_labeled=True, trained_model=False)
+        # test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, all_samples=False, manual_thresholds=False, labeled_samples=False, all_samples_labeled=False, trained_model=True)
+        test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, manual_thresholds=args.manual_thresholds)
 
     else:
         env.close()
@@ -118,7 +125,9 @@ if __name__ == '__main__':
         
         if args.pretrained_path != "":
             if args.load_buffer:
-                replay_buffer.load_buffer(args.pretrained_path)
+                replay_buffer.load(args.pretrained_path)
+                replay_buffer.partial_delete(args.num_buffer_delete)
+                replay_buffer.resize(args.buffer_size)
             if args.load_model:
                 sac_trainer.load_model(os.path.join(args.pretrained_path, 'best_by_test_sac_self_teaching'))
         
@@ -148,7 +157,7 @@ if __name__ == '__main__':
                                     'learning_starts': args.learning_starts // args.num_workers,
                                     'n_warmup': args.n_warmup // args.num_workers,
                                     'start_step': args.start_step,
-                                    # 'linear_lr_scheduler': [args.agent_rl, final_lr],
+                                    # 'linear_lr_scheduler': [args.agent_lr, final_lr],
                                     'n_updates': args.num_workers,
                                     'batch_size': args.batch_size,
                                     'callback': learn_callback,
@@ -166,8 +175,8 @@ if __name__ == '__main__':
         for process in processes:
             process.join()
         
-        replay_buffer.save_buffer(logger.save_path)
+        replay_buffer.save(logger.save_path)
         
         env_kwargs['override_hyperparams']['reward_history_threshold'] = -10.0
-        test_pipeline(SelfTeachingBaseEnv(**env_kwargs), sac_trainer, logger)
+        test_pipeline(SelfTeachingBaseEnv(**env_kwargs), sac_trainer, logger, model_path=logger.save_path, manual_thresholds=args.manual_thresholds)
 

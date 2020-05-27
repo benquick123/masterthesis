@@ -407,12 +407,10 @@ class CustomModel(nn.Module):
     
     def reset(self):
         for layer in self.layers:
-            if isinstance(layer, nn.Linear):
+            if isinstance(layer, nn.Linear) or isinstance(layer, nn.Conv2d):
                 kaiming_uniform_init(layer.weight)
-            elif isinstance(layer, nn.Conv2d):
-                xavier_uniform_init(layer.weight)     
-            elif isinstance(layer, nn.LSTM):
-                layer.reset_parameters()        
+            # elif isinstance(layer, nn.Conv2d):
+            #     xavier_uniform_init(layer.weight)
             
             if (isinstance(layer, nn.Linear) or isinstance(layer, nn.Conv2d)) and layer.bias is not None:
                 zeros_init(layer.bias)
@@ -454,7 +452,7 @@ class ConvModel(CustomModel):
     def _create_model(self, input_dim, output_dim):
         min_dropout = 0.2
         max_dropout = 0.5
-        dropout_range = torch.range(min_dropout, max_dropout, (max_dropout - min_dropout + 0.099)/(len(self.n_filters) + 1))
+        dropout_range = torch.arange(min_dropout, max_dropout, (max_dropout - min_dropout + 0.099)/(len(self.n_filters) + 1))
         
         layers = []
         for i in range(len(self.n_filters)):
