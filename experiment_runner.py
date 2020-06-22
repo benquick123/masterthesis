@@ -14,15 +14,15 @@ if __name__ == '__main__':
         ("usps", 18)
     ]"""
     args = [
-        ("mnist", 3),
-        ("mnist", 3),
-        ("mnist", 3),
-        ("mnist", 3)
+        ("cifar10", 3),
+        ("cifar10", 3),
+        ("cifar10", 3),
+        ("cifar10", 3)
     ]
     
-    for dataset, num_workers in args:
+    for i, (dataset, num_workers) in enumerate(args):
         run_str = "python3.7 main_basic.py --dataset " + dataset + " --num-workers " + str(num_workers)
-        print("RUNNING:", run_str)
+        print("RUN #%d:" % (i), run_str)
         code = os.system(run_str)
         print(dataset, "-", num_workers, "- DONE")
         

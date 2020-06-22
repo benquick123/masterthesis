@@ -216,6 +216,8 @@ class PolicyNetwork(nn.Module):
         
         stoh_action = self.action_range * torch.tanh(stoh_action)
         det_action = self.action_range * torch.tanh(mean)
+        
+        # squashing correction; samples will have different probabilities after applying tanh to them.
         log_pi = (log_pi - torch.log(1.0 - stoh_action ** 2 + epsilon)).sum(dim=1, keepdim=True)
         return det_action, stoh_action, log_pi
 
@@ -407,10 +409,10 @@ class CustomModel(nn.Module):
     
     def reset(self):
         for layer in self.layers:
-            if isinstance(layer, nn.Linear) or isinstance(layer, nn.Conv2d):
+            if isinstance(layer, nn.Linear):
                 kaiming_uniform_init(layer.weight)
-            # elif isinstance(layer, nn.Conv2d):
-            #     xavier_uniform_init(layer.weight)
+            elif isinstance(layer, nn.Conv2d):
+                xavier_uniform_init(layer.weight)
             
             if (isinstance(layer, nn.Linear) or isinstance(layer, nn.Conv2d)) and layer.bias is not None:
                 zeros_init(layer.bias)

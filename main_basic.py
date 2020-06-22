@@ -1,21 +1,15 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-gpu_num = '0'
+GPU_NUM = '0,1,2'
 import os
-os.environ['CUDA_VISIBLE_DEVICES'] = gpu_num
+os.environ['CUDA_VISIBLE_DEVICES'] = GPU_NUM
 import errno
 
 import time
 import argparse
-from datetime import datetime
 import numpy as np
 np.set_printoptions(formatter={'float': lambda x: "{0:0.2f}".format(x)})
-import shutil
-
-import torch
-import torch.multiprocessing as mp
-from torchvision import transforms
 
 from multiprocessing import Process
 from multiprocessing.managers import BaseManager

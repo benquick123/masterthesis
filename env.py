@@ -34,12 +34,12 @@ class SelfTeachingBaseEnv(gym.Env):
     metadata = {'render.modes': ["ansi"]}
     reward_range = (-10.0, 10.0)
     spec = gym.spec("SelfTeachingBase-v0")
-    
+
     def __init__(self, dataset, config_path, logger=Logger(), override_hyperparams={}):
         super(SelfTeachingBaseEnv, self).__init__()
-        
+
         self.logger = logger
-        
+
         default_hyperparams = json.load(open(os.path.join(config_path, "defaults.json")))
         experiment_hyperparams = json.load(open(os.path.join(config_path, dataset.lower() + ".json"), "r"))
         # take care for correct hyperparameters initialization
@@ -172,14 +172,14 @@ class SelfTeachingBaseEnv(gym.Env):
 
         state[-5:] = torch.Tensor([self.len_selected_samples / self.X_unlabel.shape[0], self.last_val_accuracy, self.last_train_accuracy, self.last_val_loss, self.last_train_loss])
         return self._transform_state(state)
-    
+
     def _significant(self, reward):
         self.reward_history[self.timestep % self.hyperparams['reward_history_length']] = reward
         if self.timestep < self.hyperparams['min_timesteps']:
             return True
         else:
             return torch.mean(self.reward_history) >= self.hyperparams['reward_history_threshold']
-            
+
     def _get_alpha(self, step):
         if step <= 100:
             return 0.0
@@ -187,7 +187,7 @@ class SelfTeachingBaseEnv(gym.Env):
             return 3.0 * (step - 100) / (300 - 100)
         else:
             return 3.0
-    
+
     def step(self, action):
         # rescale action to [0, 1] range.
         action = ((action + 1) / 2).view(-1)
