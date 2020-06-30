@@ -388,9 +388,11 @@ class CustomModel(nn.Module):
                 if verbose > 0:
                     print("EPOCH: %3d/%3d - loss: %.3f - alpha: %.3f" % (epoch, epochs, loss.cpu().detach().numpy(), alpha))
                 
-    def predict(self, x, batch_size=8192, gpu_id=0):
+    def predict(self, x, batch_size=8192, gpu_id=0, eval_mode=True):
         # expects 'x' to either be a tensor that fits into memory or batch_size has to be set to appropriate size.
-        self.eval()
+        if eval_mode:
+            self.eval()
+            
         with torch.no_grad():
             if batch_size != -1:
                 y = None
@@ -404,7 +406,8 @@ class CustomModel(nn.Module):
             else:
                 y = F.log_softmax(self.forward(x))
 
-        self.train()
+        if eval_mode:
+            self.train()
         return y.detach()
     
     def reset(self):

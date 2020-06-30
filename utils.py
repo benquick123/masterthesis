@@ -68,7 +68,7 @@ class ECELoss(nn.Module):
 
 class Logger:
     
-    def __init__(self, save_path=None, backup_filenames=['main_basic.py', 'main_transfer.py', 'model.py', 'env.py', 'sac_multi.py', 'utils.py']):
+    def __init__(self, save_path=None, backup_filenames=['main_basic.py', 'model.py', 'env.py', 'sac_multi.py', 'utils.py']):
         self.save_path = save_path
         self.file = None
         if self.save_path is not None:
