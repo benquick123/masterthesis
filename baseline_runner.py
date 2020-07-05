@@ -1,7 +1,7 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-GPU_NUM = '3'
+GPU_NUM = '0'
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = GPU_NUM
 
@@ -52,7 +52,7 @@ if __name__ == '__main__':
     
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, action="store", required=True, help="Dataset to use.")
-    parser.add_argument("--num-iterations", type=int, default=512, help="How many random threshold runs to try out.")
+    parser.add_argument("--num-iterations", type=int, default=386, help="How many random threshold runs to try out.")
     parser.add_argument("--path-postfix", type=str, default="baseline", action="store", help="Path postfix that is added to the logging folder.")
     parser.add_argument("--config-path", type=str, default="./config", action="store", help="Folder containing config file.")
     parser.add_argument("--results-folder", type=str, default="/opt/workspace/host_storage_hdd/results", action="store", help="Folder used as base when creating the results directory.")

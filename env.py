@@ -58,7 +58,7 @@ class SelfTeachingBaseEnv(gym.Env):
         self._load_data()
         
         self.action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,))
-        self.observation_space = gym.spaces.Box(low=0.0, high=10.0, shape=((2 * self.hyperparams['output_state_dim'] ** 2 + 5, )))
+        self.observation_space = gym.spaces.Box(low=0.0, high=10.0, shape=((self.hyperparams['output_state_dim'] ** 2 + 5, )))
         
         self.is_testing = False
         self.known_labels = False
@@ -153,10 +153,10 @@ class SelfTeachingBaseEnv(gym.Env):
      
     def _transform_state(self, state):
         probs = state[:-5]
-        probs = probs.view((2 * self.hyperparams['n_classes'], -1))
+        probs = probs.view((self.hyperparams['n_classes'], -1))
         
         diff = self.hyperparams['output_state_dim'] - self.hyperparams['n_classes']
-        probs = F.pad(probs, pad=(0, diff, 0, 2*diff))
+        probs = F.pad(probs, pad=(0, diff, 0, diff))
 
         state = torch.cat([probs.reshape(-1), state[-5:]])
         
@@ -168,8 +168,8 @@ class SelfTeachingBaseEnv(gym.Env):
         
         for i in range(self.hyperparams['n_classes']):
             mask = i == self.y_val
-            state[(2*i) * self.hyperparams['n_classes']:(2*i + 1) * self.hyperparams['n_classes']] = last_y_val_pred_exp[mask].mean(axis=0)
-            state[(2*i + 1) * self.hyperparams['n_classes']:(2*i + 2) * self.hyperparams['n_classes']] = last_y_val_pred_exp[mask].std(axis=0)
+            state[i * self.hyperparams['n_classes']:(i+1) * self.hyperparams['n_classes']] = last_y_val_pred_exp[mask].mean(axis=0)
+            # state[(2*i + 1) * self.hyperparams['n_classes']:(2*i + 2) * self.hyperparams['n_classes']] = last_y_val_pred_exp[mask].std(axis=0)
 
         state[-5:] = torch.Tensor([self.len_selected_samples / self.X_unlabel.shape[0], self.last_val_accuracy, self.last_train_accuracy, self.last_val_loss, self.last_train_loss])
         if self.hyperparams['output_state_dim'] == self.hyperparams['n_classes']:
@@ -290,7 +290,7 @@ class SelfTeachingBaseEnv(gym.Env):
         render_string += "\nNum. selected samples: %d" % (self.len_selected_samples)
         
         render_string += "\n\nThresholds:\n" + str(['%.6f' % (element) for element in self.last_action]).replace("'", "")
-        render_string += "\nState:\n" + str(self.last_state[:-5].view((2 * self.hyperparams['output_state_dim'], -1)).detach().numpy())[:-1]
+        render_string += "\nState:\n" + str(self.last_state[:-5].view((self.hyperparams['output_state_dim'], -1)).detach().numpy())[:-1]
         render_string += "\n " + str(['%.2f' % (element) for element in self.last_state[-5:]]).replace("'", "").replace(",", "")
 
         print(render_string, file=open("/opt/workspace/host_storage_hdd/tmp_" + str(self.hyperparams['worker_id']) + ".log", "w"))

@@ -41,8 +41,8 @@ if __name__ == '__main__':
     
     # training
     training_group = parser.add_argument_group("training")
-    training_group.add_argument("--agent-lr", type=float, default=3e-4, action="store", help="SAC agent learning rate.")
-    training_group.add_argument("--batch-size", type=int, default=32, action="store", help="Batch size for SAC trainer.")
+    training_group.add_argument("--agent-lr", type=float, default=5e-5, action="store", help="SAC agent learning rate.")
+    training_group.add_argument("--batch-size", type=int, default=16, action="store", help="Batch size for SAC trainer.")
     training_group.add_argument("--buffer-size", type=int, default=200000, action="store", help="Size of the replay buffer.")
     training_group.add_argument("--rl-hidden-layer-sizes", type=int, nargs="+", default=[128, 128], help="Sizes of hidden layers.")
     training_group.add_argument("--num-steps", type=int, default=400000, action="store", help="Number of steps for RL training. Divided by args.num_workers when multiprocessing is enabled.")
@@ -152,7 +152,7 @@ if __name__ == '__main__':
                                     'n_warmup': args.n_warmup // args.num_workers,
                                     'start_step': args.start_step,
                                     # 'linear_lr_scheduler': [args.agent_lr, final_lr],
-                                    'n_updates': int(np.ceil(args.num_workers / 2)),
+                                    'n_updates': args.num_workers,
                                     'batch_size': args.batch_size,
                                     'callback': learn_callback,
                                     'callback_kwargs': {'test_interval': args.test_interval // args.num_workers},
