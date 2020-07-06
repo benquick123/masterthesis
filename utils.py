@@ -250,7 +250,7 @@ def plot_confusion_matrix(matrix, filepath=None):
         plt.savefig(os.path.join(filepath, "confusion_matrix.svg"))
 
 
-def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_labeled=True, all_samples=True, manual_thresholds=True, labeled_samples=True, trained_model=True):
+def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_labeled=True, all_samples=True, manual_thresholds=True, labeled_samples=True, trained_model=True, conf_matrix=True, n_test_runs=10):
     env.is_testing = True
     action_dim = env.action_space.shape[0]
     state_dim  = env.observation_space.shape[0]
@@ -260,7 +260,8 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
 
     if model_path is not None:
         trainer.load_model(os.path.join(model_path, 'best_by_test_sac_self_teaching'))
-    trainer.to_cuda()
+    if trainer is not None:
+        trainer.to_cuda()
     
     if all_samples_labeled:
         logger.print("all samples - labeled")
@@ -268,7 +269,7 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
         tmp_alpha_lambda = env.hyperparams['unlabel_alpha']
         env.hyperparams['unlabel_alpha'] = lambda step : 1.0
         
-        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=[[0.0, 1.0]], n_episodes=10)
+        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=[[0.0, 1.0]], n_episodes=n_test_runs)
         mean_accs.append(mean_acc)
         std_accs.append(std_acc)
         labels.append("all samples - labeled")
@@ -279,7 +280,7 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
 
     if all_samples:
         logger.print("all samples - labeled & unlabeled")
-        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=[[0.0, 1.0]], n_episodes=10)
+        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=[[0.0, 1.0]], n_episodes=n_test_runs)
         mean_accs.append(mean_acc)
         std_accs.append(std_acc)
         labels.append("all samples - labeled & unlabeled")
@@ -291,48 +292,50 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
         else:
             override_action = [[0.982, -7.0/9.0]]
             
-        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=override_action, n_episodes=30)
+        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=override_action, n_episodes=n_test_runs*3)
         mean_accs.append(mean_acc)
         std_accs.append(std_acc)
         labels.append("manually set thresholds")
 
     if labeled_samples:
         logger.print("label only baseline")
-        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=True, n_episodes=10)
+        mean_acc, std_acc, _, _, _, _ = test(trainer, env, logger, override_action=True, n_episodes=n_test_runs)
         mean_accs.append(mean_acc)
         std_accs.append(std_acc)
         labels.append("label only baseline")
     
     if trained_model:
         logger.print("RL trained - test")
-        mean_acc, std_acc, mean_actions, std_actions, mean_samples, std_samples = test(trainer, env, logger, n_episodes=30)
+        mean_acc, std_acc, mean_actions, std_actions, mean_samples, std_samples = test(trainer, env, logger, n_episodes=n_test_runs*3)
         mean_accs.append(mean_acc)
         std_accs.append(std_acc)
         labels.append("RL trained - test")
     else:
         mean_actions, std_actions, mean_samples, std_samples = None, None, None, None
     
-    if logger.save_path and any([all_samples, manual_thresholds, labeled_samples, trained_model]):
+    if logger.save_path and any([all_samples_labeled, all_samples, manual_thresholds, labeled_samples, trained_model]):
         if trained_model:
             plot_actions(mean_actions, std_actions, label="test", color="C5", filepath=logger.save_path)
             plot([mean_samples], [std_samples], labels=["num selected samples"], y_lim=(0, 1), filename='test_samples', filepath=logger.save_path)
         plot(mean_accs, std_accs, labels=labels, y_lim=(0.0, 1.0), filename="test_curves", filepath=logger.save_path)
         
-    obs = env.reset()
-    model = env.model
-    for _ in range(env.hyperparams['max_timesteps']):
-        a = trainer.policy_net.get_action(obs, deterministic=True)
-        obs, _, done, _ = env.step(a)
-        if done:
-            break
-    
-    y_pred = model.predict(env.X_test, batch_size=env.hyperparams['pred_batch_size']).cpu().detach()
-    cm = confusion_matrix(env.y_test.cpu().detach(), torch.argmax(y_pred, axis=1))
+    if conf_matrix:
+        obs = env.reset()
+        model = env.model
+        for _ in range(env.hyperparams['max_timesteps']):
+            a = trainer.policy_net.get_action(obs, deterministic=True)
+            obs, _, done, _ = env.step(a)
+            if done:
+                break
+        
+        y_pred = model.predict(env.X_test, batch_size=env.hyperparams['pred_batch_size']).cpu().detach()
+        cm = confusion_matrix(env.y_test.cpu().detach(), torch.argmax(y_pred, axis=1))
     
     if logger.save_path:
         filepath = "." if logger.save_path is None else logger.save_path
-        plot_confusion_matrix(cm, filepath)
-        
+        if conf_matrix:
+            plot_confusion_matrix(cm, filepath)
+            
         # also save all the results to be pickable.
         pickle.dump({"mean_accs": mean_accs, "std_accs": std_accs, "labels": labels, "mean_actions": mean_actions, "std_actions": std_actions, "mean_samples": mean_samples, "std_samples": std_samples, "confusion_matrix": confusion_matrix}, 
                     open(os.path.join(logger.save_path, "test_results.pkl"), "wb"))
@@ -401,7 +404,7 @@ def text_dataset_loader(path, dataset_key, train=True, emb_dim=100, max_sample_l
         train_dataset = np.array([(sample[0], list(sample[1])) for sample in _csv_iterator(train_path, ngrams=1, yield_cls=1)])
         
         test_path = None if train else os.path.join(path, "test.csv")
-        test_dataset = None if train else np.array([(sample[0], list(sample[1])) for sample in _csv_iterator(train_path, ngrams=1, yield_cls=1)])
+        test_dataset = None if train else np.array([(sample[0], list(sample[1])) for sample in _csv_iterator(test_path, ngrams=1, yield_cls=1)])
 
         vec = torchtext.vocab.GloVe(name='6B', dim=emb_dim, cache='/opt/workspace/host_storage_hdd/.vector_cache')
         vocab = build_vocab_from_iterator(train_dataset[:, 1])
