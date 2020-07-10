@@ -10,7 +10,7 @@
     "model_init_fn": "model.TextModel",
     "model_kwargs":  {
         "emb_dim": 100,
-        "embedding_path": "/opt/workspace/host_storage_hdd/.data/ag_news_csv/embed_vectors_200_100.pkl"
+        "embedding_path": "/opt/workspace/host_storage_hdd/.data/ag_news_csv/embed_vectors_60_100.pkl"
     },
     "pred_batch_size": 8192,
     "batch_size": 256,
