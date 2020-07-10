@@ -32,7 +32,7 @@ def run_tests(env, logger, args):
         
         
     logger.print("Performing final test.")
-    mean_accs, std_accs, mean_actions, std_actions, mean_samples, std_samples = test(None, env, logger=logger, override_action=list(best_thresholds), n_episodes=30)
+    mean_accs, std_accs, mean_actions, std_actions, mean_samples, std_samples = test(None, env, logger=logger, override_action=list(best_thresholds), n_episodes=10)
     
     if logger.save_path:
         labels = ['best random thresholds']

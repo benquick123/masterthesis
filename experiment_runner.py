@@ -3,21 +3,12 @@ import time
 
 
 if __name__ == '__main__':
-    """args = [
-        # ("ag_news", 9),
-        # ("cifar10", 6),
-        ("dbpedia", 6),
-        ("fasion_mnist", 18),
-        ("imdb", 15),
-        ("mnist", 18),
-        ("svhn", 12),
-        ("usps", 18)
-    ]"""
     args = [
-        ("cifar10", 3),
-        ("cifar10", 3),
-        ("cifar10", 3),
-        ("cifar10", 3)
+        ("ag_news", 9),
+        ("ag_news", 9),
+        ("ag_news", 9),
+        ("ag_news", 9),
+        ("ag_news", 9)
     ]
     
     for i, (dataset, num_workers) in enumerate(args):
@@ -27,4 +18,3 @@ if __name__ == '__main__':
         print(dataset, "-", num_workers, "- DONE")
         
         time.sleep(5)
-    

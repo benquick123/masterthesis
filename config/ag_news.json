@@ -5,7 +5,7 @@
         "path": "/opt/workspace/host_storage_hdd/.data/ag_news_csv",
         "dataset_key": "AG_NEWS",
         "emb_dim": 100,
-        "max_sample_len": 200
+        "max_sample_len": 60
     },
     "model_init_fn": "model.TextModel",
     "model_kwargs":  {
