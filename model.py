@@ -502,7 +502,7 @@ class TextModel(CustomModel):
         kernel_divisor = 10
         
         self.embedding = nn.Embedding.from_pretrained(vectors)
-        # self.embedding.weight.requires_grad = False
+        self.embedding.weight.requires_grad = False
         
         self.pooling = nn.AvgPool2d((input_dim[0] // kernel_divisor, 1), stride=None)
         
