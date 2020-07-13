@@ -337,7 +337,7 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
             plot_confusion_matrix(cm, filepath)
             
         # also save all the results to be pickable.
-        pickle.dump({"mean_accs": mean_accs, "std_accs": std_accs, "labels": labels, "mean_actions": mean_actions, "std_actions": std_actions, "mean_samples": mean_samples, "std_samples": std_samples, "confusion_matrix": confusion_matrix}, 
+        pickle.dump({"mean_accs": mean_accs, "std_accs": std_accs, "labels": labels, "mean_actions": mean_actions, "std_actions": std_actions, "mean_samples": mean_samples, "std_samples": std_samples, "confusion_matrix": cm}, 
                     open(os.path.join(logger.save_path, "test_results.pkl"), "wb"))
         
     env.is_testing = False

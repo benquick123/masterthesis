@@ -157,15 +157,12 @@ class SelfTeachingBaseEnv(gym.Env):
         
         diff = self.hyperparams['output_state_dim'] - self.hyperparams['n_classes']
         probs = F.pad(probs, pad=(0, diff, 0, diff))
-
         state = torch.cat([probs.reshape(-1), state[-5:]])
-        
         return state
             
     def _get_state(self):
-        state = torch.zeros((self.observation_space.shape[0], ))
+        state = torch.zeros((self.hyperparams['n_classes'] ** 2 + 5, ))
         last_y_val_pred_exp = self.last_y_val_pred.exp()
-        
         for i in range(self.hyperparams['n_classes']):
             mask = i == self.y_val
             state[i * self.hyperparams['n_classes']:(i+1) * self.hyperparams['n_classes']] = last_y_val_pred_exp[mask].mean(axis=0)

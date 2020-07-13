@@ -499,15 +499,17 @@ class TextModel(CustomModel):
     
     def _create_model(self, input_dim, emb_dim, output_dim):
         vectors = pickle.load(open(self.embedding_path, "rb"))
-        self.embedding = nn.Embedding.from_pretrained(vectors)
-        self.embedding.weight.requires_grad = False
+        kernel_divisor = 10
         
-        self.pooling = nn.AvgPool2d((input_dim[0], 1))
+        self.embedding = nn.Embedding.from_pretrained(vectors)
+        # self.embedding.weight.requires_grad = False
+        
+        self.pooling = nn.AvgPool2d((input_dim[0] // kernel_divisor, 1), stride=None)
         
         linear_layers = []
         for i in range(len(self.dense_layer_sizes)):
             if i == 0:
-                linear_layers.append(nn.Linear(emb_dim, self.dense_layer_sizes[i]))
+                linear_layers.append(nn.Linear(kernel_divisor * emb_dim, self.dense_layer_sizes[i]))
             else:
                 linear_layers.append(nn.Linear(self.dense_layer_sizes[i-1], self.dense_layer_sizes[i]))
             linear_layers.append(nn.ReLU())
@@ -521,9 +523,11 @@ class TextModel(CustomModel):
         x = self.embedding(x)
         
         x = self.pooling(x)
-        x = x.squeeze(1)
+        # x = x.squeeze(1)
+        
+        x = x.view((x.shape[0], -1))
         
         for layer in self.linear_layers:
             x = layer(x)
-        
+            
         return x
