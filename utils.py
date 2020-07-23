@@ -143,6 +143,7 @@ def learn_callback(_locals, _globals, reward_lookback=20, test_interval=100, tes
             _locals['sac_trainer'].save_model(os.path.join(_locals['logger'].save_path, 'best_by_train_sac_self_teaching'))
         
         if num_episodes % test_interval == 0:
+            _locals['logger'].print("TESTING AT STEP %d / %d, episode #: %d" % (_locals['step'], _locals['num_steps'], _locals['n_episodes']))
             mean_accuracies, std_accuracies, mean_actions, std_actions, _, _ = test(_locals['sac_trainer'], _locals['env'], _locals['logger'], n_episodes=test_episodes)
             
             if mean_accuracies[-1] > best_test_mean_episode_accuracy:
@@ -330,6 +331,8 @@ def test_pipeline(env, trainer, logger=Logger(), model_path=None, all_samples_la
         
         y_pred = model.predict(env.X_test, batch_size=env.hyperparams['pred_batch_size']).cpu().detach()
         cm = confusion_matrix(env.y_test.cpu().detach(), torch.argmax(y_pred, axis=1))
+    else:
+        cm = None
     
     if logger.save_path:
         filepath = "." if logger.save_path is None else logger.save_path

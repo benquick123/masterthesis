@@ -499,7 +499,7 @@ class TextModel(CustomModel):
     
     def _create_model(self, input_dim, emb_dim, output_dim):
         vectors = pickle.load(open(self.embedding_path, "rb"))
-        kernel_divisor = 10
+        kernel_divisor = 1
         
         self.embedding = nn.Embedding.from_pretrained(vectors)
         self.embedding.weight.requires_grad = False

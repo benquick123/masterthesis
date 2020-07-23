@@ -59,11 +59,14 @@ if __name__ == '__main__':
     parser.add_argument("--random-seed", type=int, default=np.random.randint(100000), action="store", help="Random seed used for experiment initalization. Recommended when continuing training.")
     parser.add_argument("--start-from", type=int, default=0, action="store", help="Iteration from which to start testing.")
     parser.add_argument("--min-accuracy", type=float, default=0.0, action="store", help="Minimum accuracy that triggers 'NEW BEST'.")
+    parser.add_argument("--custom-path", type=str, default=None, action="store", help="Custom folder name for saving results.")
     
     args = parser.parse_args()
     args.from_dataset = ""
     
     logger = Logger()
+    if args.custom_path is not None:
+        logger.set_path(save_path=args.custom_path)
     logger.create_logdirs(args)
     
     env = SelfTeachingBaseEnv(logger=logger, config_path=args.config_path, dataset=args.dataset, override_hyperparams={"random_seed": args.random_seed})

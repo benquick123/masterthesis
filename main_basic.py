@@ -1,15 +1,16 @@
 import warnings
 warnings.filterwarnings('ignore')
 
-GPU_NUM = '3'
+import numpy as np
+np.set_printoptions(formatter={'float': lambda x: "{0:0.2f}".format(x)})
+
+GPU_NUM = '1,2,3' # np.random.choice(['1', '3'])
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = GPU_NUM
 import errno
 
 import time
 import argparse
-import numpy as np
-np.set_printoptions(formatter={'float': lambda x: "{0:0.2f}".format(x)})
 
 from multiprocessing import Process
 from multiprocessing.managers import BaseManager
@@ -110,8 +111,8 @@ if __name__ == '__main__':
             logger.print("Overwriting old results.")
             
         env_kwargs['override_hyperparams']['reward_history_threshold'] = -10.0
-        # test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, all_samples=False, manual_thresholds=False, labeled_samples=False, all_samples_labeled=False, trained_model=True)
-        test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, manual_thresholds=args.manual_thresholds, n_test_runs=2)
+        test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, all_samples=False, manual_thresholds=args.manual_thresholds, labeled_samples=False, all_samples_labeled=False, trained_model=True, conf_matrix=False, n_test_runs=4)
+        # test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, manual_thresholds=args.manual_thresholds, n_test_runs=2)
 
     else:
         env.close()
