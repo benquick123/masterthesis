@@ -4,7 +4,7 @@ warnings.filterwarnings('ignore')
 import numpy as np
 np.set_printoptions(formatter={'float': lambda x: "{0:0.2f}".format(x)})
 
-GPU_NUM = '1,2,3' # np.random.choice(['1', '3'])
+GPU_NUM = '3,2,1' # np.random.choice(['1', '3'])
 import os
 os.environ['CUDA_VISIBLE_DEVICES'] = GPU_NUM
 import errno
@@ -111,7 +111,7 @@ if __name__ == '__main__':
             logger.print("Overwriting old results.")
             
         env_kwargs['override_hyperparams']['reward_history_threshold'] = -10.0
-        test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, all_samples=False, manual_thresholds=args.manual_thresholds, labeled_samples=False, all_samples_labeled=False, trained_model=True, conf_matrix=False, n_test_runs=4)
+        test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, all_samples=False, manual_thresholds=args.manual_thresholds, labeled_samples=False, all_samples_labeled=False, trained_model=True, conf_matrix=False)
         # test_pipeline(env, sac_trainer, logger, model_path=args.pretrained_path, manual_thresholds=args.manual_thresholds, n_test_runs=2)
 
     else:
@@ -173,5 +173,5 @@ if __name__ == '__main__':
         replay_buffer.save(logger.save_path)
         
         env_kwargs['override_hyperparams']['reward_history_threshold'] = -10.0
-        # test_pipeline(SelfTeachingBaseEnv(**env_kwargs), sac_trainer, logger, model_path=logger.save_path, manual_thresholds=args.manual_thresholds)
-
+        # test_pipeline(SelfTeachingBaseEnv(**env_kwargs), sac_trainer, logger, model_path=logger.save_path, manual_thresholds=args.manual_thresholds, all_samples=False, labeled_samples=False, conf_matrix=False, all_samples_labeled=False, trained_model=True)
+        test_pipeline(SelfTeachingBaseEnv(**env_kwargs), sac_trainer, logger, model_path=logger.save_path, manual_thresholds=args.manual_thresholds)
