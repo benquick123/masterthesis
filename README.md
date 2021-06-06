@@ -1,6 +1,6 @@
 This is the repository of my master's thesis code, titled *Acquisition and use of meta-knowledge for more efficient training sample selection* written as part of my cognitive science studies. It barely touches on cognitive science though; its main focus is meta-learning, reinforcement learning and semi-supervised learning, where all three are tied up to form a system, capable of meta-knowledge acquisition. For more details, see abstract below.
 
-Whole work is available in Slovene at [this URL](http://pefprints.pef.uni-lj.si/6445/).
+Whole work is available in Slovene [here](http://pefprints.pef.uni-lj.si/6445/).
 
 ## Abstract
 
